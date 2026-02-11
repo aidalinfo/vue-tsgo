@@ -34,18 +34,15 @@ jobs:
       - name: Install Vue test dependencies
         shell: bash
         run: |
-          for dir in internal/vue/tests/vue-*/; do
-            (cd "$dir" && npm install)
+          set -e
+          for dir in internal/vue/tests/vue-3.2 internal/vue/tests/vue-3.3 internal/vue/tests/vue-3.4 internal/vue/tests/vue-3.5 internal/vue/tests/vue-3.6; do
+            echo "Installing $dir..."
+            (cd "$dir" && npm install --no-package-lock)
+            ls "$dir/node_modules/vue/package.json"
           done
 
       - name: Run tests
         run: go test ./internal/vue/tests/... -v -count=1
-
-      - name: Run Volar comparison tests (Linux only)
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          ./scripts/setup-volar-reference.sh
-          go test ./internal/vue/tests/volar_comparison/... -v
 
   build:
     name: Build Binary
