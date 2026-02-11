@@ -23,7 +23,8 @@ import (
 //   - Run: ./scripts/setup-volar-reference.sh
 //
 // To update golden files from Volar:
-//   UPDATE_GOLDEN=1 go test ./internal/vue/tests/volar_comparison/... -run TestExactVolarMatch -v
+//
+//	UPDATE_GOLDEN=1 go test ./internal/vue/tests/volar_comparison/... -run TestExactVolarMatch -v
 func TestExactVolarMatch(t *testing.T) {
 	projectRoot := getProjectRoot(t)
 	requireVolarSetup(t, projectRoot)

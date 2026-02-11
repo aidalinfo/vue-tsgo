@@ -10,16 +10,16 @@ import (
 
 type ServiceCodeWithSourceMap struct {
 	ServiceText []byte
-	ScriptKind ScriptKind
-	Mappings []byte
+	ScriptKind  ScriptKind
+	Mappings    []byte
 }
 
 type PluginOptions struct {
-	Input io.Reader
+	Input  io.Reader
 	Output io.Writer
 	// Example: [".vue"]
-	ExtraExtensions []string
-	CreateServiceCodeWithSourceMap func (fileName string, sourceText string) *ServiceCodeWithSourceMap
+	ExtraExtensions                []string
+	CreateServiceCodeWithSourceMap func(fileName string, sourceText string) *ServiceCodeWithSourceMap
 }
 
 func ensureCap(b []byte, needed uint32) []byte {
@@ -84,11 +84,11 @@ func Run(opts PluginOptions) {
 				offset += 8
 				fileNameLen := binary.LittleEndian.Uint32(task[offset:])
 				offset += 4
-				fileName := string(task[offset:offset+fileNameLen])
+				fileName := string(task[offset : offset+fileNameLen])
 				offset += fileNameLen
 				sourceTextLen := binary.LittleEndian.Uint32(task[offset:])
 				offset += 4
-				sourceText := string(task[offset:offset+sourceTextLen])
+				sourceText := string(task[offset : offset+sourceTextLen])
 				offset += sourceTextLen
 
 				res := opts.CreateServiceCodeWithSourceMap(fileName, sourceText)
@@ -96,7 +96,7 @@ func Run(opts PluginOptions) {
 				responsePayloadLen := uint32(8 + 1 + 1 + 4 + len(res.ServiceText) + 4 + len(res.Mappings))
 
 				offset = 0
-				sendBuf = ensureCap(sendBuf, 5 + responsePayloadLen)
+				sendBuf = ensureCap(sendBuf, 5+responsePayloadLen)
 				sendBuf[0] = byte(MsgKindCreateServiceCodeResponse)
 				offset += 1
 				binary.LittleEndian.PutUint32(sendBuf[offset:], responsePayloadLen)
