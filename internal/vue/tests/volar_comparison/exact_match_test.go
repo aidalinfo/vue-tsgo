@@ -132,12 +132,12 @@ func formatContextDiff(expected, actual []string, contextLines int) string {
 
 	// First pass: identify which lines differ
 	type diffLine struct {
-		lineNum  int
-		expLine  string
-		actLine  string
-		isDiff   bool
-		expOnly  bool // line only exists in expected
-		actOnly  bool // line only exists in actual
+		lineNum int
+		expLine string
+		actLine string
+		isDiff  bool
+		expOnly bool // line only exists in expected
+		actOnly bool // line only exists in actual
 	}
 
 	var diffs []diffLine

@@ -199,17 +199,17 @@ func newCodegenCtx(root *vue_ast.RootNode, sourceText string, options VueOptions
 // then emitting the script boilerplate with filtered bindings,
 // then appending the template output.
 type templateOutput struct {
-	text              string
-	mappings          []mapping.Mapping
-	ignoreDirectives  []mapping.IgnoreDirectiveMapping
-	expectErrorDirs   []mapping.ExpectErrorDirectiveMapping
-	diagnostics       []*ast.Diagnostic
-	usedTemplateVars  []string
-	allAccessedVars   []string
-	templateHasSlots  bool
-	internalVarCount  int
-	scopedClasses     []string
-	templateRefs      []templateRefInfo
+	text             string
+	mappings         []mapping.Mapping
+	ignoreDirectives []mapping.IgnoreDirectiveMapping
+	expectErrorDirs  []mapping.ExpectErrorDirectiveMapping
+	diagnostics      []*ast.Diagnostic
+	usedTemplateVars []string
+	allAccessedVars  []string
+	templateHasSlots bool
+	internalVarCount int
+	scopedClasses    []string
+	templateRefs     []templateRefInfo
 }
 
 // generateTemplateBuffered generates template codegen into a separate buffer.
@@ -228,17 +228,17 @@ func generateTemplateBuffered(base *codegenCtx, el *vue_ast.ElementNode) templat
 	}
 	generateTemplate(&tmpCtx, el)
 	return templateOutput{
-		text:              tmpCtx.serviceText.String(),
-		mappings:          tmpCtx.mappings,
-		ignoreDirectives:  tmpCtx.ignoreDirectives,
-		expectErrorDirs:   tmpCtx.expectErrorDirectives,
-		diagnostics:       tmpCtx.diagnostics,
-		usedTemplateVars:  tmpCtx.usedTemplateVars,
-		allAccessedVars:   tmpCtx.allAccessedVars,
-		templateHasSlots:  tmpCtx.templateHasSlots,
-		internalVarCount:  tmpCtx.internalVariableCounter,
-		scopedClasses:     tmpCtx.scopedClasses,
-		templateRefs:      tmpCtx.templateRefs,
+		text:             tmpCtx.serviceText.String(),
+		mappings:         tmpCtx.mappings,
+		ignoreDirectives: tmpCtx.ignoreDirectives,
+		expectErrorDirs:  tmpCtx.expectErrorDirectives,
+		diagnostics:      tmpCtx.diagnostics,
+		usedTemplateVars: tmpCtx.usedTemplateVars,
+		allAccessedVars:  tmpCtx.allAccessedVars,
+		templateHasSlots: tmpCtx.templateHasSlots,
+		internalVarCount: tmpCtx.internalVariableCounter,
+		scopedClasses:    tmpCtx.scopedClasses,
+		templateRefs:     tmpCtx.templateRefs,
 	}
 }
 

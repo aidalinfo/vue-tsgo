@@ -17,8 +17,8 @@ func TestSetupImportsBinding(t *testing.T) {
 	{{ useCssModule/*2*/ }}
 </template>
 `, func(t *testing.T, f *fourslash.FourslashTest, version vueVersion) {
-		f.VerifyQuickInfoAt(t, "1", `(alias) function useCssModule(name?: string): Record<string, string>`, "")
-		f.VerifyQuickInfoAt(t, "2", `(property) useCssModule: (name?: string) => Record<string, string>`, "")
+		f.VerifyQuickInfoAt(t, "1", `(alias) function useCssModule(name?: string | undefined): Record<string, string>`, "")
+		f.VerifyQuickInfoAt(t, "2", `(property) useCssModule: (name?: string | undefined) => Record<string, string>`, "")
 		f.VerifyNonSuggestionDiagnostics(t, []*lsproto.Diagnostic{})
 	})
 }

@@ -13,12 +13,12 @@ import (
 
 // defineModelInfo holds parsed metadata for a single defineModel() call.
 type defineModelInfo struct {
-	camelizedName            string // "modelValue" for default, or camelized from explicit name
-	camelizedModifierName    string // "model" for default, or same as camelizedName
-	typeText                 string // source text of the type argument, e.g. "number", or "" for any
-	modifierTypeText         string // source text of the 2nd type argument, e.g. "'trim' | 'lazy'", or ""
-	required                 bool   // options.required === true
-	hasDefault               bool   // options.default present
+	camelizedName         string // "modelValue" for default, or camelized from explicit name
+	camelizedModifierName string // "model" for default, or same as camelizedName
+	typeText              string // source text of the type argument, e.g. "number", or "" for any
+	modifierTypeText      string // source text of the 2nd type argument, e.g. "'trim' | 'lazy'", or ""
+	required              bool   // options.required === true
+	hasDefault            bool   // options.default present
 }
 
 type scriptCodegenCtx struct {

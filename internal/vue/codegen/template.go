@@ -32,8 +32,8 @@ var jsGlobals = collections.NewSetFromItems(
 
 type templateCodegenCtx struct {
 	*codegenCtx
-	scopes             []collections.Set[string]
-	parentComponentVar string
+	scopes                      []collections.Set[string]
+	parentComponentVar          string
 	condChain                   conditionalChain
 	blockConditions             []string // stack of condition expressions for compound event guards
 	blockConditionsChainSaveLen int      // saved blockConditions length at start of current v-if chain

@@ -17,11 +17,11 @@ import (
 )
 
 type ExtraShim struct {
-	ExtraFunctions  []string
-	ExtraMethods    map[string]([]string)
-	ExtraFields     map[string]([]string)
-	ExtraFieldSetters     map[string]([]string)
-	IgnoreFunctions []string
+	ExtraFunctions    []string
+	ExtraMethods      map[string]([]string)
+	ExtraFields       map[string]([]string)
+	ExtraFieldSetters map[string]([]string)
+	IgnoreFunctions   []string
 }
 
 func main() {
@@ -47,14 +47,14 @@ func main() {
 		"vfs",
 		"vfs/cachedvfs",
 		"vfs/osvfs",
-	}, "./shim/typescript-go/",   "./shim/typescript-go/compiler")
+	}, "./shim/typescript-go/", "./shim/typescript-go/compiler")
 
 	genShims("github.com/withastro/compiler/internal/", []string{
 		"",
 		"transform",
 		"handler",
 		"printer",
-	}, "./shim/astro-compiler/",   "")
+	}, "./shim/astro-compiler/", "")
 }
 
 func genShims(internalPrefix string, packagesToShim []string, basePath string, firstPackage string) {
@@ -65,7 +65,7 @@ func genShims(internalPrefix string, packagesToShim []string, basePath string, f
 
 	packages, err := packages.Load(&packages.Config{
 		// TODO: path relative to repo root
-		Dir: firstPackage,
+		Dir:  firstPackage,
 		Mode: packages.LoadSyntax,
 	}, packagesToShimFullNames...)
 	if err != nil {

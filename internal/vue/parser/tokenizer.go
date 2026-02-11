@@ -337,8 +337,8 @@ func (t *Tokenizer) stateText(c rune) {
 		}
 		t.state = StateBeforeTagName
 		t.sectionStart = t.index
-	// } else if c == CharCodeAmp {
-	// 	t.startEntity()
+		// } else if c == CharCodeAmp {
+		// 	t.startEntity()
 	} else if !t.inVPre && c == defaultDelimitersOpen[0] {
 		t.state = StateInterpolationOpen
 		t.delimiterIndex = 0

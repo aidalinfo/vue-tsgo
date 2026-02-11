@@ -27,4 +27,3 @@ func TestDefineExposeCallExpression(t *testing.T) {
 		f.VerifyNonSuggestionDiagnostics(t, []*lsproto.Diagnostic{})
 	})
 }
-

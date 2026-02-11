@@ -17,12 +17,12 @@ import (
 )
 
 type Plugin struct {
-	stdin      io.WriteCloser
-	stdout     io.ReadCloser
+	stdin   io.WriteCloser
+	stdout  io.ReadCloser
 	sendBuf []byte
-	mu sync.Mutex
+	mu      sync.Mutex
 
-	reqId atomic.Uint64
+	reqId                     atomic.Uint64
 	createServiceCodeRequests sync.Map
 
 	ExtraExtensions []string
@@ -81,7 +81,7 @@ func NewPlugin(args []string) (*Plugin, error) {
 			case plugin.MsgKindCreateServiceCodeResponse:
 				reqId := binary.LittleEndian.Uint64(recvBuf)
 				f, _ := p.createServiceCodeRequests.LoadAndDelete(reqId)
-				f.(func (r[]byte))(recvBuf[8:])
+				f.(func(r []byte))(recvBuf[8:])
 			}
 		}
 	}()
@@ -109,18 +109,18 @@ func ensureCap(b []byte, needed uint32) []byte {
 }
 
 type CreateServiceCodeResponse struct {
-	ServiceText string
-	SourceMap string
-	ScriptKind core.ScriptKind
-	Mappings []mapping.Mapping
+	ServiceText    string
+	SourceMap      string
+	ScriptKind     core.ScriptKind
+	Mappings       []mapping.Mapping
 	IgnoreMappings []mapping.IgnoreDirectiveMapping
 }
 
-func (p *Plugin) CreateServiceCode(fileName string, sourceText string) <- chan CreateServiceCodeResponse {
+func (p *Plugin) CreateServiceCode(fileName string, sourceText string) <-chan CreateServiceCodeResponse {
 	ch := make(chan CreateServiceCodeResponse, 1)
 
 	reqId := p.reqId.Add(1)
-	p.createServiceCodeRequests.Store(reqId, func (payload []byte) {
+	p.createServiceCodeRequests.Store(reqId, func(payload []byte) {
 		offset := uint32(0)
 
 		properties := payload[offset]
@@ -140,20 +140,20 @@ func (p *Plugin) CreateServiceCode(fileName string, sourceText string) <- chan C
 			response.ScriptKind = core.ScriptKindTSX
 		}
 
-		if properties & 1 != 0 {
+		if properties&1 != 0 {
 			serviceTextLen := binary.LittleEndian.Uint32(payload[offset:])
 			offset += 4
-			response.ServiceText = string(payload[offset:offset+serviceTextLen])
+			response.ServiceText = string(payload[offset : offset+serviceTextLen])
 			offset += serviceTextLen
 
 			sourceMapLen := binary.LittleEndian.Uint32(payload[offset:])
 			offset += 4
-			response.SourceMap = string(payload[offset:offset+sourceMapLen])
+			response.SourceMap = string(payload[offset : offset+sourceMapLen])
 			offset += sourceMapLen
 		} else {
 			serviceTextLen := binary.LittleEndian.Uint32(payload[offset:])
 			offset += 4
-			response.ServiceText = string(payload[offset:offset+serviceTextLen])
+			response.ServiceText = string(payload[offset : offset+serviceTextLen])
 			offset += serviceTextLen
 
 			mappingsCount := binary.LittleEndian.Uint32(payload[offset:])
@@ -175,7 +175,7 @@ func (p *Plugin) CreateServiceCode(fileName string, sourceText string) <- chan C
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	p.sendBuf = ensureCap(p.sendBuf, uint32(8 + 4 + len(fileName) + 4 + len(sourceText)))
+	p.sendBuf = ensureCap(p.sendBuf, uint32(8+4+len(fileName)+4+len(sourceText)))
 	binary.LittleEndian.PutUint64(p.sendBuf, reqId)
 	offset := 8
 	binary.LittleEndian.PutUint32(p.sendBuf[offset:], uint32(len(fileName)))
