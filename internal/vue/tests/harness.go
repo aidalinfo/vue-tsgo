@@ -42,7 +42,7 @@ func withVueNodeModules(t *testing.T, version vueVersion, content string) string
 			if err != nil {
 				return err
 			}
-			virtualPath := filepath.Join("/", p)
+			virtualPath := "/" + filepath.ToSlash(p)
 
 			// https://en.wikipedia.org/wiki/Delimiter#Control_characters
 			extraFilesBuilder.WriteString(path)
