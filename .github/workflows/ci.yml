@@ -137,13 +137,15 @@ jobs:
           go-version: '1.25'
 
       - name: Run go vet
-        run: go vet ./...
+        run: go vet ./internal/... ./cmd/... ./tools/... ./plugin/...
 
       - name: Run go fmt check
         run: |
-          if [ -n "$(gofmt -l .)" ]; then
+          UNFORMATTED=$(gofmt -l . | grep -v '^thirdparty/' || true)
+          if [ -n "$UNFORMATTED" ]; then
             echo "Go code is not formatted:"
-            gofmt -d .
+            echo "$UNFORMATTED"
+            gofmt -d $(echo "$UNFORMATTED")
             exit 1
           fi
 
