@@ -1,0 +1,116 @@
+name: Version Bump
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump_type:
+        description: 'Version bump type'
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - prerelease
+      prerelease_id:
+        description: 'Prerelease identifier (e.g., beta, alpha) - only for prerelease'
+        required: false
+        type: string
+        default: 'beta'
+
+permissions:
+  contents: write
+
+jobs:
+  bump-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Get current version
+        id: current
+        run: |
+          VERSION=$(node -p "require('./cli/package.json').version")
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "📌 Current version: ${VERSION}"
+
+      - name: Bump CLI version
+        id: bump_cli
+        working-directory: cli
+        run: |
+          if [ "${{ github.event.inputs.bump_type }}" = "prerelease" ]; then
+            npm version ${{ github.event.inputs.bump_type }} --preid=${{ github.event.inputs.prerelease_id }} --no-git-tag-version
+          else
+            npm version ${{ github.event.inputs.bump_type }} --no-git-tag-version
+          fi
+          NEW_VERSION=$(node -p "require('./package.json').version")
+          echo "version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "🆕 New version: ${NEW_VERSION}"
+
+      - name: Bump VS Code extension version
+        working-directory: editors/vscode
+        run: |
+          npm version ${{ steps.bump_cli.outputs.version }} --no-git-tag-version --allow-same-version
+
+      - name: Update CHANGELOG
+        run: |
+          VERSION="${{ steps.bump_cli.outputs.version }}"
+          DATE=$(date +%Y-%m-%d)
+
+          # Create new changelog entry
+          cat > /tmp/new_entry.md << EOF
+          ## [${VERSION}] - ${DATE}
+
+          ### Added
+          -
+
+          ### Changed
+          -
+
+          ### Fixed
+          -
+
+          EOF
+
+          # Insert after [Unreleased] section
+          sed -i "/## \[Unreleased\]/r /tmp/new_entry.md" CHANGELOG.md
+
+          # Update comparison links
+          echo "" >> CHANGELOG.md
+          echo "[${VERSION}]: https://github.com/NikhilVerma/vue-tsgo/compare/v${{ steps.current.outputs.version }}...v${VERSION}" >> CHANGELOG.md
+
+      - name: Commit version bump
+        run: |
+          VERSION="${{ steps.bump_cli.outputs.version }}"
+          git add cli/package.json editors/vscode/package.json CHANGELOG.md
+          git commit -m "chore: bump version to ${VERSION}"
+          git push origin main
+
+      - name: Create and push tag
+        run: |
+          VERSION="${{ steps.bump_cli.outputs.version }}"
+          git tag -a "v${VERSION}" -m "Release v${VERSION}"
+          git push origin "v${VERSION}"
+          echo "🏷️  Created and pushed tag v${VERSION}"
+
+      - name: Summary
+        run: |
+          echo "# 🎉 Version Bump Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Old Version:** ${{ steps.current.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**New Version:** ${{ steps.bump_cli.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Bump Type:** ${{ github.event.inputs.bump_type }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The release workflow will automatically trigger." >> $GITHUB_STEP_SUMMARY

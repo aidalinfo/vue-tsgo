@@ -1,0 +1,15 @@
+#!/usr/bin/env node
+
+const { spawnSync } = require('child_process');
+const { join } = require('path');
+
+const BINARY_NAME = process.platform === 'win32' ? 'tsgo.exe' : 'tsgo';
+const BIN_PATH = join(__dirname, BINARY_NAME);
+
+// Forward all arguments to the binary
+const result = spawnSync(BIN_PATH, process.argv.slice(2), {
+  stdio: 'inherit',
+  shell: false,
+});
+
+process.exit(result.status || 0);

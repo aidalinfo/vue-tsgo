@@ -1,0 +1,90 @@
+From e6860af04971a0a541cd5c5ac53bff321e9c22a7 Mon Sep 17 00:00:00 2001
+From: Nikhil Verma <nikhilgotmail@gmail.com>
+Date: Tue, 10 Feb 2026 17:15:29 +0530
+Subject: [PATCH 2/2] fix(build): wrap compiler host with Golar callbacks for
+ Vue support
+
+- Build mode now properly wraps CompilerHost with Golar callbacks
+- Fixes panic when type-checking .vue files in build mode (-b flag)
+- Enables Vue SFC type checking in project references mode
+---
+ internal/execute/build/orchestrator.go | 21 +++++++++++++--------
+ internal/project/compilerhost.go       | 19 ++++++++++++++++++-
+ 2 files changed, 31 insertions(+), 9 deletions(-)
+
+diff --git a/internal/execute/build/orchestrator.go b/internal/execute/build/orchestrator.go
+index c3658cec2..995ed0986 100644
+--- a/internal/execute/build/orchestrator.go
++++ b/internal/execute/build/orchestrator.go
+@@ -382,16 +382,21 @@ func NewOrchestrator(opts Options) *Orchestrator {
+ 		},
+ 		tasks: &collections.SyncMap[tspath.Path, *BuildTask]{},
+ 	}
++	baseHost := compiler.NewCachedFSCompilerHost(
++		orchestrator.opts.Sys.GetCurrentDirectory(),
++		orchestrator.opts.Sys.FS(),
++		orchestrator.opts.Sys.DefaultLibraryPath(),
++		nil,
++		nil,
++	)
++	// Wrap with Golar callbacks for framework file support (e.g., .vue files)
++	if golarCallbacks := orchestrator.opts.Sys.GetGolarCallbacks(); golarCallbacks != nil {
++		baseHost = golarCallbacks.WrapCompilerHost(baseHost)
++	}
+ 	orchestrator.host = &host{
+ 		orchestrator: orchestrator,
+-		host: compiler.NewCachedFSCompilerHost(
+-			orchestrator.opts.Sys.GetCurrentDirectory(),
+-			orchestrator.opts.Sys.FS(),
+-			orchestrator.opts.Sys.DefaultLibraryPath(),
+-			nil,
+-			nil,
+-		),
+-		mTimes: &collections.SyncMap[tspath.Path, time.Time]{},
++		host:         baseHost,
++		mTimes:       &collections.SyncMap[tspath.Path, time.Time]{},
+ 	}
+ 	if opts.Command.CompilerOptions.Watch.IsTrue() {
+ 		orchestrator.watchStatusReporter = tsc.CreateWatchStatusReporter(opts.Sys, opts.Command.Locale(), opts.Command.CompilerOptions, opts.Testing)
+diff --git a/internal/project/compilerhost.go b/internal/project/compilerhost.go
+index 14f033f7f..bde3b6550 100644
+--- a/internal/project/compilerhost.go
++++ b/internal/project/compilerhost.go
+@@ -1,8 +1,11 @@
+ package project
+ 
+ import (
++	"strings"
++
+ 	"github.com/microsoft/typescript-go/internal/ast"
+ 	"github.com/microsoft/typescript-go/internal/compiler"
++	"github.com/microsoft/typescript-go/internal/core"
+ 	"github.com/microsoft/typescript-go/internal/diagnostics"
+ 	"github.com/microsoft/typescript-go/internal/project/logging"
+ 	"github.com/microsoft/typescript-go/internal/tsoptions"
+@@ -95,7 +98,21 @@ func (c *compilerHost) GetResolvedProjectReference(fileName string, path tspath.
+ func (c *compilerHost) GetSourceFile(opts ast.SourceFileParseOptions) *ast.SourceFile {
+ 	c.ensureAlive()
+ 	if fh := c.sourceFS.GetFileByPath(opts.FileName, opts.Path); fh != nil {
+-		return c.builder.parseCache.Load(NewParseCacheKey(opts, fh.Hash(), fh.Kind()), ParseCacheArgs{fh: fh, fs: c.sourceFS})
++		kind := fh.Kind()
++		// Normalize ScriptKind for extra extensions (e.g. .vue files from disk).
++		// Disk files return ScriptKindUnknown from GetScriptKindFromFileName(),
++		// but Golar's ParseSourceFile callback converts them to ScriptKindTS.
++		// The cache key must use the normalized kind so Snapshot.Clone's Ref()
++		// matches the key used during Load().
++		if kind == core.ScriptKindUnknown {
++			for _, ext := range tspath.ExtraExtensions {
++				if strings.HasSuffix(opts.FileName, ext) {
++					kind = core.ScriptKindTS
++					break
++				}
++			}
++		}
++		return c.builder.parseCache.Load(NewParseCacheKey(opts, fh.Hash(), kind), ParseCacheArgs{fh: fh, fs: c.sourceFS})
+ 	}
+ 	return nil
+ }
+-- 
+2.49.0
+

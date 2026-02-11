@@ -1,0 +1,175 @@
+{
+    "name": "vue-tsgo",
+    "displayName": "vue-tsgo - Vue Language Server",
+    "publisher": "NikhilVerma",
+    "author": "nonfx",
+    "description": "Blazingly fast Vue 3 type checker and language server powered by typescript-go. 10-50x faster than vue-tsc.",
+    "icon": "logo.png",
+    "version": "0.1.0",
+    "type": "commonjs",
+    "categories": [
+        "Programming Languages",
+        "Linters"
+    ],
+    "keywords": [
+        "vue",
+        "vue3",
+        "typescript",
+        "language-server",
+        "type-checker",
+        "volar",
+        "sfc"
+    ],
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/NikhilVerma/vue-tsgo"
+    },
+    "bugs": {
+        "url": "https://github.com/NikhilVerma/vue-tsgo/issues"
+    },
+    "homepage": "https://github.com/NikhilVerma/vue-tsgo#readme",
+    "license": "MIT",
+    "engines": {
+        "vscode": "^1.106.0"
+    },
+    "capabilities": {
+        "untrustedWorkspaces": {
+            "supported": false
+        }
+    },
+    "activationEvents": [
+        "onLanguage:javascript",
+        "onLanguage:javascriptreact",
+        "onLanguage:typescript",
+        "onLanguage:typescriptreact",
+        "onLanguage:vue"
+    ],
+    "contributes": {
+        "configuration": [
+            {
+                "title": "vue-tsgo",
+                "properties": {
+                    "vue-tsgo.trace.server": {
+                        "type": "string",
+                        "enum": [
+                            "off",
+                            "messages",
+                            "verbose"
+                        ],
+                        "default": "verbose",
+                        "description": "Trace vue-tsgo server communication.",
+                        "tags": [
+                            "experimental"
+                        ]
+                    },
+                    "vue-tsgo.pprofDir": {
+                        "type": "string",
+                        "description": "Directory to write pprof profiles to.",
+                        "tags": [
+                            "experimental"
+                        ]
+                    },
+                    "vue-tsgo.tsdk": {
+                        "type": "string",
+                        "description": "Path to the vue-tsgo binary directory. If not specified, the extension will use the bundled binary.",
+                        "tags": [
+                            "experimental"
+                        ]
+                    },
+                    "vue-tsgo.goMemLimit": {
+                        "type": "string",
+                        "description": "Set GOMEMLIMIT for the language server (e.g., '2048MiB', '4GiB'). See https://pkg.go.dev/runtime#hdr-Environment_Variables for more information.",
+                        "pattern": "^[0-9]+(([KMGT]i)?B)?$",
+                        "patternErrorMessage": "Must be a valid memory limit (e.g., '2048MiB', '4GiB').",
+                        "tags": [
+                            "experimental"
+                        ]
+                    }
+                }
+            }
+        ],
+        "languages": [
+            {
+                "id": "vue",
+                "extensions": [".vue"],
+                "configuration": "./languages/vue-language-configuration.json"
+            }
+        ],
+        "grammars": [
+            {
+                "language": "vue",
+                "scopeName": "text.html.vue",
+                "path": "./syntaxes/vue.tmLanguage.json",
+                "embeddedLanguages": {
+                    "source.ts": "typescript",
+                    "source.tsx": "typescriptreact",
+                    "source.js": "javascript",
+                    "source.js.jsx": "javascriptreact",
+                    "source.css": "css",
+                    "source.css.scss": "scss",
+                    "source.css.less": "less",
+                    "source.json": "json",
+                    "source.yaml": "yaml",
+                    "text.pug": "jade",
+                    "text.html.markdown": "markdown",
+                    "text.html.derivative": "html"
+                }
+            },
+            {
+                "scopeName": "vue.directives",
+                "path": "./syntaxes/vue-directives.json",
+                "injectTo": ["text.html.vue", "text.html.markdown", "text.html.derivative", "text.pug"]
+            },
+            {
+                "scopeName": "vue.interpolations",
+                "path": "./syntaxes/vue-interpolations.json",
+                "injectTo": ["text.html.vue", "text.html.markdown", "text.html.derivative", "text.pug"]
+            }
+        ],
+        "commands": [
+            {
+                "command": "vue-tsgo.restart",
+                "title": "Restart Language Server",
+                "enablement": "vue-tsgo.serverRunning",
+                "category": "vue-tsgo"
+            },
+            {
+                "command": "vue-tsgo.output.focus",
+                "title": "Show Output",
+                "enablement": "vue-tsgo.serverRunning",
+                "category": "vue-tsgo"
+            },
+            {
+                "command": "vue-tsgo.lsp-trace.focus",
+                "title": "Show LSP Trace",
+                "enablement": "vue-tsgo.serverRunning",
+                "category": "vue-tsgo"
+            },
+            {
+                "command": "vue-tsgo.reportIssue",
+                "title": "Report Issue",
+                "enablement": "vue-tsgo.serverRunning",
+                "category": "vue-tsgo"
+            },
+            {
+                "title": "Show References of CodeLens",
+                "command": "vue-tsgo.codeLens.showLocations",
+                "enablement": "false"
+            }
+        ]
+    },
+    "main": "./dist/extension.bundle.js",
+    "scripts": {
+        "build": "tsc",
+        "watch": "tsc --watch",
+        "bundle": "esbuild src/extension.ts --bundle --external:vscode --platform=node --format=cjs --outfile=dist/extension.bundle.js --minify"
+    },
+    "dependencies": {
+        "vscode-languageclient": "^10.0.0-next.18"
+    },
+    "devDependencies": {
+        "@types/vscode": "^1.106.1",
+        "@vscode/vsce": "^3.7.1",
+        "esbuild": "^0.27.1"
+    }
+}

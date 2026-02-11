@@ -1,0 +1,439 @@
+# Golar Language Server
+
+Golar is a native Vue language support implementation for typescript-go (tsgo). The goal is to provide first-class Vue Single File Component (SFC) support directly in the TypeScript compiler, enabling fast, accurate type checking and language server features for Vue projects.
+
+The project is architecturally inspired by Volar.js but implemented in Go. It integrates with typescript-go (a native TypeScript compiler port) to provide type-aware language server features.
+
+The project consists of:
+
+- **Root module** (`github.com/NikhilVerma/vue-tsgo`) - Contains Golar-specific framework code for Vue support
+- **typescript-go submodule** - A native port of the TypeScript compiler and language server written in Go (at `thirdparty/typescript-go/`)
+- **Shim layer** - Wrapper packages in `shim/` that expose typescript-go internal APIs for use by Golar
+
+**See [docs/architecture.md](./docs/architecture.md) for the full architecture document** covering: submodule management, patch system, codegen pipeline, porting strategy, and testing approach.
+
+## Core Principles
+
+1. **1:1 compatibility with vue-tsc** — Our goal is to produce identical type checking results. When vue-tsc reports an error, we must report the same error. When it doesn't, we must not.
+
+2. **When in doubt, look at the original Volar code** — The reference implementation lives at `.reference/language-tools/` (set up via `./scripts/setup-volar-reference.sh`). Always check how Volar handles a feature before implementing it. Use `cd .reference && bun run generate_volar.ts <file.vue>` to see Volar's codegen output for any file.
+
+3. **Correctness over shortcuts** — This is production tooling used by real developers. Always choose the correct implementation over quick hacks.
+
+## Repository Structure
+
+```sh
+golar/
+├── golar/                    # Public API exports
+├── internal/
+│   ├── golar/               # Core Golar language integration
+│   ├── vue/                 # Vue.js specific implementation
+│   │   ├── parser/          # Vue template/SFC parser
+│   │   ├── codegen/         # TypeScript code generation from Vue templates
+│   │   ├── ast/             # Vue AST definitions
+│   │   └── tests/           # Vue feature tests (v-if, v-for, diagnostics, etc.)
+│   ├── mapping/             # Source-to-service position mapping
+│   ├── utils/               # Utilities (overlay VFS, etc.)
+│   └── collections/         # Collection utilities
+├── editors/
+│   └── vscode/              # VS Code extension
+│       ├── src/             # Extension TypeScript source
+│       ├── syntaxes/        # TextMate grammars (Vue, directive/interpolation injections)
+│       ├── languages/       # Language configuration (brackets, folding)
+│       ├── lib/             # Built binary (gitignored)
+│       └── dist/            # Bundled JS (gitignored)
+├── scripts/                 # Build scripts (build-extension.sh)
+├── shim/                    # Generated wrappers around typescript-go internals
+├── thirdparty/typescript-go/ # Submodule: native TypeScript compiler/LSP
+│   ├── internal/            # TypeScript compiler internals (ast, checker, binder, etc.)
+│   ├── cmd/tsgo/           # Main CLI entry point
+│   └── _submodules/TypeScript/  # Reference TypeScript implementation
+└── tools/                   # Code generation tools (gen_shims)
+```
+
+## Build and Development Commands
+
+This project uses Go modules with a workspace configuration. The typescript-go submodule uses `hereby` (a TypeScript build tool) for builds and tests.
+
+**Use `bun` for all JavaScript/TypeScript package management** (not npm or pnpm).
+
+### Initial Setup
+
+```bash
+# Clone submodules and apply patches
+git submodule update --init
+cd thirdparty/typescript-go
+git am --3way --no-gpg-sign ../../patches/*.patch
+cd ../..
+```
+
+### Building
+
+```bash
+# Using Makefile (recommended)
+make build-binary           # Build golar/tsgo binary
+make build-extension        # Build VS Code extension (.vsix)
+make install-extension      # Install extension in VS Code
+make test                   # Run all tests
+make clean                  # Clean build artifacts
+
+# Or manually:
+go build -o golar/tsgo ./thirdparty/typescript-go/cmd/tsgo
+
+# Build VS Code extension manually:
+./scripts/build-extension.sh
+
+# Or build components individually:
+go build -o editors/vscode/lib/tsgo ./thirdparty/typescript-go/cmd/tsgo
+cd editors/vscode && bun install && bun run bundle
+npx @vscode/vsce package --no-dependencies
+```
+
+### Testing
+
+```bash
+cd typescript-go
+
+# Run all tests
+npx hereby test
+
+# Run a specific compiler test
+go test -run='TestSubmodule/<test name>' ./internal/testrunner  # For tests in _submodules/TypeScript
+go test -run='TestLocal/<test name>' ./internal/testrunner      # For tests in testdata/tests/cases
+
+# Run Vue-specific tests (from root)
+cd /Volumes/repos/golar
+go test ./internal/vue/tests/...
+```
+
+### Code Quality
+
+```bash
+cd typescript-go
+
+# Format code (must run before committing)
+npx hereby format
+
+# Lint code (must pass before committing)
+npx hereby lint
+
+# Accept test baselines after changes
+npx hereby baseline-accept
+```
+
+## Architecture
+
+### Golar Language Integration
+
+Golar works by transforming framework-specific files (like `.vue`) into TypeScript service code that typescript-go can analyze:
+
+1. **Parser** (`internal/vue/parser`) - Tokenizes and parses Vue SFC files into an AST
+2. **Codegen** (`internal/vue/codegen`) - Generates TypeScript code from Vue templates with mappings
+3. **Mapping** (`internal/mapping`) - Tracks positions between source (`.vue`) and generated TypeScript
+4. **Language Integration** (`internal/golar/golar.go`) - Hooks into typescript-go via `GolarCallbacks`
+
+Key integration points in `internal/golar/golar.go`:
+
+- `compilerHostProxy.GetSourceFile()` - Intercepts `.vue` file reads, parses and generates TS
+- `diagnosticProxy` - Maps TypeScript diagnostics back to source positions in `.vue` files
+- `WrapFS()` - Overlays virtual files (e.g., `vue-global-types.d.ts`) onto the file system
+
+### Shim Layer
+
+The `shim/` directory contains generated wrapper packages that expose typescript-go's internal APIs. These are created by `tools/gen_shims` and should not be manually edited. To update:
+
+```bash
+./tools/update-typescript-go-shims.sh
+```
+
+### TypeScript-Go Reference
+
+When implementing features or fixing bugs, `_submodules/TypeScript` serves as the reference implementation. The code in `typescript-go/internal/` is a Go port of the TypeScript codebase. Always consult the TypeScript source when the Go behavior differs or is incomplete.
+
+## Testing Framework
+
+### Compiler Tests
+
+TypeScript compiler tests are written as `.ts`/`.tsx` files in `testdata/tests/cases/compiler/` with special comment directives:
+
+```typescript
+// @target: esnext
+// @module: preserve
+// @strict: true
+
+// @filename: file1.ts
+export interface Person {
+    name: string;
+}
+
+// @filename: file2.ts
+import { Person } from "./file1";
+```
+
+**Always enable `@strict: true` for new tests unless testing non-strict behavior.**
+
+Test outputs are generated in `testdata/baselines/local/` and compared against `testdata/baselines/reference/`. Use `npx hereby baseline-accept` to accept new baselines.
+
+### Vue Tests
+
+Vue-specific tests use the fourslash harness (see `internal/vue/tests/`). These test language service features like:
+
+- Diagnostics in templates (`diagnostic_test.go`)
+- Quick info/hover (`quickinfo_test.go`)
+- Directives like `v-if` and `v-for` (`vif_test.go`, `vfor_test.go`)
+
+## Development Workflow
+
+### For TypeScript-Go Work
+
+1. Write minimal test case in `testdata/tests/cases/compiler/`
+2. Run test to verify failure (or baseline)
+3. Implement fix in relevant `internal/` package
+4. Run tests and accept baselines
+5. Format and lint before committing
+
+### For Golar/Vue Work
+
+1. Add test in `internal/vue/tests/`
+2. Implement parser/codegen changes
+3. Update mappings if needed
+4. Run tests: `go test ./internal/vue/tests/...`
+5. Verify end-to-end with `go build -o golar/tsgo ./thirdparty/typescript-go/cmd/tsgo`
+
+## Important Constraints
+
+- **Do not remove debug assertions or panic calls** - Existing assertions are correct
+- **Do not add/change dependencies** unless explicitly requested
+- **Shim files are auto-generated** - Do not manually edit files in `shim/`
+- **Always run format and lint** - CI will reject PRs if these fail
+- **Reference TypeScript source** - `_submodules/TypeScript` is the behavioral reference
+- **Always choose correctness over shortcuts** - This is an open source tool used by many developers. When faced with a choice between a quick/lazy solution and the proper/correct approach, always implement it the proper way. Correctness and maintainability are paramount.
+
+## Go Workspace
+
+This project uses Go 1.25 workspaces (`go.work`):
+
+- Root module: `github.com/NikhilVerma/vue-tsgo` (`.`)
+- Submodule: `github.com/microsoft/typescript-go` (`./thirdparty/typescript-go`)
+
+Replace directives in `go.mod` map typescript-go shim imports to local `./shim/` directories.
+
+## Patching typescript-go
+
+The `patches/` directory contains Git patches that extend typescript-go with Golar integration points. When making changes to files in `typescript-go/`:
+
+1. Make changes in the `typescript-go/` submodule
+2. Amend the existing Golar patch commit: `git commit --amend`
+3. Regenerate the patch: `git format-patch -1 HEAD -o ../patches/`
+
+The patch adds hooks for:
+- `GolarCallbacks` interface in `internal/golarext/golarext.go`
+- Compiler host wrapping for custom file parsing
+- Diagnostic adjustment for source mapping
+- LSP integration points
+
+**All typescript-go execution modes must use Golar callbacks** - This includes regular compilation (`tsc.go`), build mode (`build/orchestrator.go`), watch mode, and LSP. Missing integration in any mode will cause `.vue` files to be parsed as raw TypeScript.
+
+## Volar.js as Reference Implementation
+
+When implementing Vue language features, **always consult Volar.js source code** for the correct behavior:
+- Repository: https://github.com/vuejs/language-tools
+- Key packages: `packages/language-core/lib/codegen/`
+
+Volar's approach should be followed for:
+- Template expression handling (interpolations, directives)
+- Event handler codegen (`v-on`/`@` - compound vs simple expressions)
+- Slot handling (`v-slot`/`#`)
+- Two-way binding (`v-model`)
+- Component type inference
+
+## Codegen Architecture
+
+The codegen transforms `.vue` files into TypeScript "service code" that preserves:
+
+1. **Line correspondence** - Service code maintains same line count as source for accurate error positions
+2. **Source mappings** - Character-level mappings between source and service text
+3. **Scope tracking** - Template scopes for `v-for` variables, event `$event`, etc.
+
+Key codegen patterns:
+- **Interpolations** `{{ expr }}` → `;( expr )` with identifier prefixing
+- **Conditionals** `v-if`/`v-else-if`/`v-else` → `if/else if/else` blocks
+- **Loops** `v-for` → block scope with destructuring from `__VLS_vFor()` helper
+- **Events** `@click="handler"` → `;(handler)` or `;((...[$event]) => { ... })` for compound expressions
+
+### Compound vs Simple Event Expressions
+
+Event handlers require special handling based on expression type:
+- **Simple**: Function reference or property access (`handleClick`, `obj.method`) → use directly
+- **Compound**: Inline statement (`count++`, `emit('event')`) → wrap in arrow function with `$event` parameter
+
+## Common Pitfalls
+
+1. **Go string literals** - Use double quotes `"...\n"` for strings with escapes, not backticks `` `...\n` `` which treat `\n` as literal characters
+
+2. **Multiple execution modes** - typescript-go has several entry points (regular compile, build mode `-b`, watch mode `-w`, LSP). Each must integrate Golar callbacks.
+
+3. **Diagnostic position mapping** - Errors from generated code must map back to source positions. Unmapped positions will show incorrect locations.
+
+4. **AST field additions** - When adding fields to Vue AST nodes (like `DirectiveNode.Arg`), update both the struct definition and the parser that populates it.
+
+5. **Parser `InnerLoc` for SFC elements** - When closing SFC root elements (script, template, style), the element has already been removed from the stack when `onCloseTag()` is called. Check `len(p.stack) == 0` not `inSFCRoot()` which checks stack length incorrectly.
+
+6. **Entity handling in attribute values** - The tokenizer's entity decoder (`stateInEntity`) is not fully implemented. When it sees `&` in attribute values (like `v-if="a && b"`), it enters `StateInEntity` but never exits, causing parsing to fail. Entity handling is currently disabled for attribute values since Vue templates use JavaScript operators like `&&`.
+
+7. **ASI (Automatic Semicolon Insertion) in codegen** - Generated expressions like `;(expr)` followed by `{` on the next line can be misinterpreted by TypeScript as arrow functions. Always add explicit semicolons: `;(expr);` not `;(expr)`.
+
+8. **Syntax errors block semantic diagnostics** - TypeScript's `GetDiagnosticsOfAnyProgram()` exits early if there are syntax errors (TS1xxx), preventing semantic errors (TS2xxx) from being reported. Fix syntax errors in codegen first.
+
+9. **Property name quoting** - HTML attributes and Vue event names may contain characters invalid in JS identifiers (hyphens, colons). These must be quoted: `aria-label` → `"aria-label"`, `onUpdate:open` → `"onUpdate:open"`.
+
+10. **Vue's camelize only handles hyphens** - Vue's `camelize()` from `@vue/shared` uses regex `/-\w/g` - it only converts hyphens, NOT colons. Event names like `update:open` become `onUpdate:open` (colon preserved), not `onUpdateOpen`. Always check `@vue/shared` source when implementing string transformations.
+
+11. **Line preservation vs character preservation** - Golar preserves line counts (newlines) but NOT character counts per line. Long lines (like minified CSS) should not be replaced with equivalent spaces - just use empty lines. Character-level mapping is handled by source maps.
+
+12. **AST node positions include trivia** - TypeScript AST node `Loc.Pos()` includes leading whitespace (trivia). When extracting identifier names, use the `Text` field from `Identifier` nodes (`n.AsIdentifier().Text`) instead of slicing source text by positions. Otherwise you'll get names with leading spaces.
+
+13. **Imported vs global components** - Volar distinguishes between imported components and global components:
+    - **Imported**: `const __VLS_0 = ComponentName || ComponentName` (direct reference)
+    - **Global**: `let __VLS_0!: __VLS_WithComponent<...>` (type lookup)
+
+    Track setup consts (imports, variables, functions from script setup) and check if the component tag matches. Use `camelize()` and `capitalize()` to match different naming conventions (e.g., `my-component` → `MyComponent`).
+
+14. **Dynamic components `<component :is="expr">`** - The `<component>` tag with `:is` directive requires special handling:
+    - Search props for `v-bind` directive with arg `"is"`
+    - Extract the expression and use it as the component type
+    - Filter out the `:is` prop from the generated prop list (use `generateElementPropsFiltered()` to skip the directive)
+    - Generate: `const __VLS_N = (expression);` then continue with standard component codegen
+    - Expression identifiers follow normal prefixing rules (JS globals unprefixed, setup vars prefixed with `__VLS_ctx.`)
+    - Works with simple expressions (`Foo`) and complex expressions (`Math.random() > 0.5 ? Foo : Bar`)
+
+15. **Component emit type inference requires defineEmits** - The `__VLS_NormalizeComponentEvent` type has constraints like `Event extends keyof Emits`. If a component doesn't declare emits via `defineEmits`, the emit type is `{}`, making `keyof Emits` equal to `never`, which causes TS2344 constraint errors. Full emit type inference requires capturing `defineEmits` return value and threading it through the generated code.
+
+16. **Build mode (`-b`) requires Golar host wrapping** - typescript-go has multiple execution modes (regular `-p`, incremental, build `-b`, watch `-w`, LSP). Each creates its own `compiler.CompilerHost`. The build mode in `internal/execute/build/orchestrator.go` creates a host via `compiler.NewCachedFSCompilerHost()` which must be wrapped with `sys.GetGolarCallbacks().WrapCompilerHost(host)` — otherwise `.vue` files hit `compiler/host.go:GetSourceFile()` which calls `core.GetScriptKindFromFileName()` returning `ScriptKindUnknown` and panics. Always verify new execution modes wrap the compiler host.
+
+17. **Empty `<script setup>` and template-only components** - Vue SFCs can have: (a) empty `<script setup lang="ts"></script>` with no content, or (b) no `<script>` tag at all (template-only). The parser produces 0 children and nil `Ast` for empty script blocks. Codegen must handle these cases: skip text mapping and statement iteration when children is empty, and always generate `__VLS_SetupExposed` type (even as empty `{}` for template-only components) since template codegen references it for component resolution.
+
+18. **Extension registration must be unconditional** - `tspath.RegisterSupportedExtension(".vue")` must be called in an unconditional `init()` function in `internal/golar/golar.go`. Without this, the file loader in `filesparser.go` rejects `.vue` files because they're not in `supportedExtensions`. The second `init()` that checks `GOLAR_PLUGIN` env is for the plugin system and is separate.
+
+19. **Export pattern optimization** - Components without slots should not use the `__VLS_base` intermediate:
+    - **Without slots**: `const __VLS_export = (await import('vue')).defineComponent({...});`
+    - **With slots**: `const __VLS_base = (await import('vue')).defineComponent({...}); const __VLS_export = {} as __VLS_WithSlots<typeof __VLS_base, __VLS_Slots>;`
+    - Check both `slotsVariableName` (from `defineSlots`) and `c.templateHasSlots` (from `<slot>` elements in template)
+    - The condition should be: `if !hasDefineComponentOptions && !hasSlots` for simple case, `else if hasSlots` for slots case, `else` for no-slots-with-options case
+
+20. **Runtime props vs type-only props in defineComponent export** - When `defineProps` has a runtime argument (object literal like `defineProps({ foo: String })`), Volar emits `props: { foo: String }` in the `defineComponent()` call. When `defineProps` has only type parameters (`defineProps<{ foo: string }>()`), Volar emits `__typeProps: {} as __VLS_Props`. **Runtime args take precedence** — when present, `__typeProps` is NOT emitted even if there are also model props. See Volar's `component.ts` where `typeOptionGenerates.length = 0` when `scriptSetupRanges.defineProps?.arg` exists.
+
+21. **Typed v-slot destructuring** - The pattern `v-slot="{ item }: { item: Type }"` must NOT put the type annotation inside the array destructuring (that's invalid TypeScript). Volar separates the type into the second argument of `__VLS_vSlot()`:
+    - **Correct**: `const [{ item }] = __VLS_vSlot(slotVar!, (_: { item: Type }, ) => [] as any)`
+    - **Wrong**: `const [{ item }: { item: Type }] = __VLS_vSlot(slotVar)` (TS1005 syntax error)
+    - The `__VLS_vSlot` helper uses the second arg's parameter types to infer the slot type
+    - Implementation: `mapSlotBindingExpression()` in `template.go` extracts the type from the arrow function parameter
+
+22. **defineModel duplication in second-pass emission** - `emitScriptSetupContentWithTypeExtraction()` iterates all statements and re-emits them. When the first pass already emitted part of a statement (e.g., `defineModel` call within a variable declaration), the second pass must start from `max(pos, stmtStart)` to avoid re-emitting already-handled text. The first pass sets `lastMappedPos` to the end of the call expression, but the statement's start is before that.
+
+24. **LSP parse cache key mismatch for .vue files** - The LSP's `compilerHost.GetSourceFile()` stores files in a `ParseCache` keyed by `(ParseOptions, Hash, ScriptKind)`. For disk `.vue` files, `fh.Kind()` returns `ScriptKindUnknown`, but Golar's `ParseSourceFile` callback converts it to `ScriptKindTS`. When `Snapshot.Clone()` calls `parseCache.Ref()` with the file's actual `ScriptKind` (`ScriptKindTS`), the key doesn't match the `ScriptKindUnknown` used during `Load()`, causing a panic. Fix: normalize `ScriptKindUnknown` to `ScriptKindTS` for extra extensions in `compilerhost.go` BEFORE creating the cache key.
+
+25. **Template-only components need full boilerplate** - Components with no `<script>` tag still need: macros declaration, `__VLS_ctx`, component/directive type declarations, template codegen, AND `export default`. Missing the export causes TS2305 "has no exported member 'default'" when the component is imported. The `else` branch in `generateScript` (when `scriptSetupEl == nil`) must generate all of this.
+
+## Volar Comparison Testing
+
+The `.reference/` directory (gitignored) contains the official Volar/Vue language-tools for comparing Golar's codegen output against the reference implementation.
+
+### Setup
+
+```bash
+./scripts/setup-volar-reference.sh
+```
+
+This script:
+1. Clones vuejs/language-tools into `.reference/language-tools/`
+2. Installs dependencies with bun
+3. Creates `generate_volar.ts` script for generating reference output
+
+### Running Comparison Tests
+
+```bash
+go test ./internal/vue/tests/volar_comparison/... -v
+```
+
+### Generating Volar Output Manually
+
+```bash
+cd .reference
+bun run generate_volar.ts <path-to-vue-file>
+```
+
+### Generating Golar Output Manually
+
+```bash
+go run ./cmd/test_codegen <path-to-vue-file> --service
+```
+
+The goal is 1:1 compatibility with Volar's codegen output. Most differences have been resolved (variable naming, type helpers, element/component handling). Remaining minor differences are tracked in TODO.md.
+
+## VS Code Extension
+
+The extension lives in `editors/vscode/` and launches the golar `tsgo` binary as an LSP server.
+
+### Key Files
+
+- `src/extension.ts` - Entry point, always activates (no gating)
+- `src/client.ts` - Creates `LanguageClient` with `vue-tsgo` config namespace
+- `src/util.ts` - Binary resolution (`vue-tsgo.tsdk` setting or bundled `lib/tsgo`), language mode registration (includes `vue`)
+- `syntaxes/vue.tmLanguage.json` - Main Vue TextMate grammar (from Volar)
+- `syntaxes/vue-directives.json` - Injection grammar for Vue directives (`:attr`, `@event`, `v-*`) inside HTML tags
+- `syntaxes/vue-interpolations.json` - Injection grammar for `{{ }}` in template content
+- `languages/vue-language-configuration.json` - Bracket matching, auto-close, folding rules
+
+### How Syntax Highlighting Works
+
+The main Vue grammar handles `<script>`, `<style>`, and `<template>` blocks. Inside `<template>`, child elements are handled by VS Code's built-in HTML grammar (`text.html.derivative`). Two **injection grammars** add Vue-specific highlighting on top:
+
+1. **vue-directives.json** injects into `meta.tag` scopes, adding Vue directive attribute patterns (`:loading="expr"`, `@click="handler"`) with embedded TypeScript expression highlighting via `source.ts#expression`
+2. **vue-interpolations.json** injects into `text.html.derivative`, adding `{{ expr }}` interpolation highlighting
+
+Without these injection grammars, directive expressions appear as plain strings.
+
+### Building the Extension
+
+```bash
+# Full build (binary + bundle + .vsix)
+./scripts/build-extension.sh
+
+# Quick rebuild after code changes
+go build -o editors/vscode/lib/tsgo ./thirdparty/typescript-go/cmd/tsgo
+cd editors/vscode && rm -f golar-*.vsix && npx @vscode/vsce package --no-dependencies
+
+# Install
+code --install-extension editors/vscode/golar-*.vsix --force
+```
+
+## Debug Tools
+
+### test_codegen
+
+A CLI tool for inspecting parser and codegen output:
+
+```bash
+# Show AST structure
+go run ./cmd/test_codegen <vue-file>
+
+# Show generated TypeScript service code
+go run ./cmd/test_codegen <vue-file> --service
+```
+
+### Comparing with Official tsgo
+
+```bash
+# Build Golar
+go build -o golar/tsgo ./thirdparty/typescript-go/cmd/tsgo
+
+# Run Golar on a project (use -b for Nuxt/composite projects)
+./golar/tsgo -b --noEmit
+
+# Compare error count with official tsgo
+bunx tsgo -p <tsconfig-path> --noEmit 2>&1 | grep -c "error TS"
+
+# Compare with vue-tsc (MUST use bunx --bun, not npx — npx crashes on Node v24+)
+bunx --bun vue-tsc -b --noEmit 2>&1 | grep -c "error TS"
+```

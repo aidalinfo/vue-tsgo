@@ -1,0 +1,47 @@
+{
+  "name": "vue-tsgo",
+  "version": "0.1.0",
+  "description": "Blazingly fast Vue 3 type checker powered by typescript-go",
+  "keywords": [
+    "vue",
+    "typescript",
+    "type-checker",
+    "vue3",
+    "sfc",
+    "volar",
+    "vue-tsc"
+  ],
+  "homepage": "https://github.com/NikhilVerma/vue-tsgo#readme",
+  "bugs": {
+    "url": "https://github.com/NikhilVerma/vue-tsgo/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NikhilVerma/vue-tsgo.git"
+  },
+  "license": "MIT",
+  "author": "Nikhil Verma <https://github.com/NikhilVerma>",
+  "bin": {
+    "vue-tsgo": "./bin/vue-tsgo"
+  },
+  "files": [
+    "bin/",
+    "install.js",
+    "README.md"
+  ],
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ]
+}

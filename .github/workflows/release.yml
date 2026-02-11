@@ -1,0 +1,336 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 0.1.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  # Extract version from tag or input
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
+      tag: ${{ steps.get_version.outputs.tag }}
+    steps:
+      - name: Get version
+        id: get_version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+            TAG="v${VERSION}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+            VERSION="${TAG#v}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "📦 Version: ${VERSION}"
+          echo "🏷️  Tag: ${TAG}"
+
+  # Build binaries for all platforms
+  build-binaries:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            binary: tsgo
+            asset: tsgo-linux-amd64
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+            binary: tsgo
+            asset: tsgo-linux-arm64
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+            binary: tsgo
+            asset: tsgo-darwin-amd64
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+            binary: tsgo
+            asset: tsgo-darwin-arm64
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+            binary: tsgo.exe
+            asset: tsgo-windows-amd64.exe
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: go build -ldflags "-s -w" -o ${{ matrix.binary }} ./thirdparty/typescript-go/cmd/tsgo
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.binary }}
+          retention-days: 1
+
+  # Build VS Code extension for all platforms
+  build-vsix:
+    needs: [prepare, build-binaries]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin-arm64
+            binary_artifact: tsgo-darwin-arm64
+            binary_name: tsgo
+          - platform: darwin-x64
+            binary_artifact: tsgo-darwin-amd64
+            binary_name: tsgo
+          - platform: linux-x64
+            binary_artifact: tsgo-linux-amd64
+            binary_name: tsgo
+          - platform: linux-arm64
+            binary_artifact: tsgo-linux-arm64
+            binary_name: tsgo
+          - platform: win32-x64
+            binary_artifact: tsgo-windows-amd64.exe
+            binary_name: tsgo.exe
+
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Download binary
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.binary_artifact }}
+          path: editors/vscode/lib
+
+      - name: Make binary executable
+        run: chmod +x editors/vscode/lib/${{ matrix.binary_name }} 2>/dev/null || true
+
+      - name: Update extension version
+        working-directory: editors/vscode
+        run: npm version ${{ needs.prepare.outputs.version }} --no-git-tag-version --allow-same-version
+
+      - name: Install extension dependencies
+        working-directory: editors/vscode
+        run: npm install
+
+      - name: Bundle extension
+        working-directory: editors/vscode
+        run: npm run bundle
+
+      - name: Package VSIX
+        working-directory: editors/vscode
+        run: npx @vscode/vsce package --no-dependencies --target ${{ matrix.platform }} --out vue-tsgo-${{ needs.prepare.outputs.version }}@${{ matrix.platform }}.vsix
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vsix-${{ matrix.platform }}
+          path: editors/vscode/*.vsix
+          retention-days: 1
+
+  # Create GitHub Release
+  create-release:
+    needs: [prepare, build-binaries, build-vsix]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all VSIX artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: vsix-*
+          path: release
+          merge-multiple: true
+
+      - name: Download all binary artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: tsgo-*
+          path: release
+          merge-multiple: true
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          cat > release-notes.md << 'EOF'
+          ## Installation
+
+          ### npm (Global CLI)
+          ```bash
+          npm install -g vue-tsgo@${{ needs.prepare.outputs.version }}
+          ```
+
+          ### VS Code Extension
+          Download the `.vsix` for your platform and install:
+          ```bash
+          code --install-extension vue-tsgo-${{ needs.prepare.outputs.version }}@<platform>.vsix
+          ```
+
+          Or install from [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=NikhilVerma.vue-tsgo)
+
+          ### Standalone Binaries
+          Download the binary for your platform and add to PATH.
+
+          ## Platform Guide
+
+          | Platform | VSIX | Binary |
+          |----------|------|--------|
+          | macOS Apple Silicon | `@darwin-arm64` | `tsgo-darwin-arm64` |
+          | macOS Intel | `@darwin-x64` | `tsgo-darwin-amd64` |
+          | Linux x64 | `@linux-x64` | `tsgo-linux-amd64` |
+          | Linux ARM64 | `@linux-arm64` | `tsgo-linux-arm64` |
+          | Windows x64 | `@win32-x64` | `tsgo-windows-amd64.exe` |
+
+          ## What's Changed
+
+          See [CHANGELOG.md](https://github.com/NikhilVerma/vue-tsgo/blob/main/CHANGELOG.md) for full details.
+          EOF
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: vue-tsgo ${{ needs.prepare.outputs.version }}
+          body_path: release-notes.md
+          draft: false
+          prerelease: ${{ contains(needs.prepare.outputs.version, '-') }}
+          files: release/*
+          generate_release_notes: true
+
+  # Publish to npm
+  publish-npm:
+    needs: [prepare, build-binaries, create-release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Update CLI version
+        working-directory: cli
+        run: npm version ${{ needs.prepare.outputs.version }} --no-git-tag-version --allow-same-version
+
+      - name: Publish to npm
+        working-directory: cli
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "❌ NPM_TOKEN secret not set"
+            echo "ℹ️  Set it at: https://github.com/${{ github.repository }}/settings/secrets/actions"
+            exit 1
+          fi
+          npm publish --access public
+
+  # Publish to VS Code Marketplace
+  publish-marketplace:
+    needs: [prepare, build-vsix, create-release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all VSIX artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: vsix-*
+          path: vsix
+          merge-multiple: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Publish to VS Code Marketplace
+        working-directory: vsix
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_TOKEN }}
+        run: |
+          if [ -z "$VSCE_PAT" ]; then
+            echo "❌ VSCE_TOKEN secret not set"
+            echo "ℹ️  Set it at: https://github.com/${{ github.repository }}/settings/secrets/actions"
+            exit 1
+          fi
+
+          for vsix in *.vsix; do
+            echo "📦 Publishing ${vsix}..."
+            npx @vscode/vsce publish --packagePath "$vsix" --pat "$VSCE_PAT"
+          done
+
+      - name: Publish to Open VSX (optional)
+        if: env.OVSX_TOKEN != ''
+        working-directory: vsix
+        env:
+          OVSX_TOKEN: ${{ secrets.OVSX_TOKEN }}
+        run: |
+          for vsix in *.vsix; do
+            echo "📦 Publishing ${vsix} to Open VSX..."
+            npx ovsx publish "$vsix" -p "$OVSX_TOKEN" || echo "⚠️  Open VSX publish failed (non-fatal)"
+          done
+
+  # Summary
+  release-summary:
+    needs: [prepare, create-release, publish-npm, publish-marketplace]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Release Summary
+        run: |
+          echo "# 🎉 Release Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ needs.prepare.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Tag:** ${{ needs.prepare.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ needs.create-release.result }}" = "success" ]; then
+            echo "✅ GitHub Release created" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ GitHub Release failed" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ "${{ needs.publish-npm.result }}" = "success" ]; then
+            echo "✅ Published to npm" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ npm publish failed" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ "${{ needs.publish-marketplace.result }}" = "success" ]; then
+            echo "✅ Published to VS Code Marketplace" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ VS Code Marketplace publish failed" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📦 Installation" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "npm install -g vue-tsgo@${{ needs.prepare.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY

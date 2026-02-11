@@ -1,0 +1,67 @@
+name: Question
+description: Ask a question about usage or behavior
+title: "[Question]: "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have a question? We're here to help!
+
+        **Note**: For general discussions, consider using [GitHub Discussions](https://github.com/NikhilVerma/vue-tsgo/discussions) instead.
+
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Prerequisites
+      description: Please confirm before asking
+      options:
+        - label: I have read the documentation (README, CONTRIBUTING, docs/)
+          required: true
+        - label: I have searched existing issues and discussions
+          required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Question Category
+      description: What is your question about?
+      options:
+        - Installation / Setup
+        - Usage / How-to
+        - Configuration
+        - Performance
+        - Troubleshooting
+        - Architecture / Design
+        - Contributing
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Your Question
+      description: Please be as specific as possible
+      placeholder: "How do I...?"
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: |
+        Provide any relevant context:
+        - What are you trying to achieve?
+        - What have you already tried?
+        - Any error messages or unexpected behavior?
+      placeholder: |
+        Environment: macOS 14, vue-tsgo v0.1.0
+        I'm trying to...
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Information
+      description: Code samples, screenshots, or related links

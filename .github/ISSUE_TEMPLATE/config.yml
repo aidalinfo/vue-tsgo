@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: GitHub Discussions
+    url: https://github.com/NikhilVerma/vue-tsgo/discussions
+    about: Ask questions, share ideas, and discuss with the community
+  - name: Documentation
+    url: https://github.com/NikhilVerma/vue-tsgo#readme
+    about: Read the documentation, guides, and API reference
+  - name: Security Issue
+    url: https://github.com/NikhilVerma/vue-tsgo/blob/main/SECURITY.md
+    about: Report security vulnerabilities privately
