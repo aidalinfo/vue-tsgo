@@ -1,0 +1,302 @@
+/* placeholder */
+const isOpen = ref(false)
+const target = ref<HTMLDivElement>()
+const items = ref(['a', 'b', 'c'])
+
+function close() {
+  isOpen.value = false
+}
+debugger/* PartiallyEnd: #3632/scriptSetup.vue */
+// @ts-ignore
+declare const { defineProps, defineSlots, defineEmits, defineExpose, defineModel, defineOptions, withDefaults, }: typeof import('vue');
+type __VLS_PublicProps = {};
+const __VLS_ctx = {} as InstanceType<__VLS_PickNotAny<typeof __VLS_self, new () => {}>>;
+type __VLS_LocalComponents = & typeof __VLS_ctx;
+let __VLS_components!: __VLS_LocalComponents & __VLS_GlobalComponents;
+type __VLS_LocalDirectives = & typeof __VLS_ctx;
+let __VLS_directives!: __VLS_LocalDirectives & __VLS_GlobalDirectives;
+__VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+...{ onClick: (...[$event]) => {
+__VLS_ctx.isOpen = true;
+}},
+ref: "target",
+...{ class: "wrapper" },
+});
+/** @type {typeof __VLS_ctx.target} */;
+const __VLS_0 = ({} as __VLS_WithComponent<'Teleport', __VLS_LocalComponents, void, 'Teleport', 'Teleport', 'Teleport'>).Teleport;
+/** @type {[typeof __VLS_components.Teleport, typeof __VLS_components.Teleport, ]} */;
+// @ts-ignore
+const __VLS_1 = __VLS_asFunctionalComponent(__VLS_0, new __VLS_0({
+to: "body",
+}));
+const __VLS_2 = __VLS_1({
+to: "body",
+}, ...__VLS_functionalComponentArgsRest(__VLS_1));
+__VLS_3.slots!.default;
+const __VLS_4 = ({} as __VLS_WithComponent<'FDialog', __VLS_LocalComponents, void, 'FDialog', 'FDialog', 'FDialog'>).FDialog;
+/** @type {[typeof __VLS_components.FDialog, typeof __VLS_components.FDialog, ]} */;
+// @ts-ignore
+const __VLS_5 = __VLS_asFunctionalComponent(__VLS_4, new __VLS_4({
+isOpen: (__VLS_ctx.isOpen),
+target: (__VLS_ctx.target),
+overlay: true,
+}));
+const __VLS_6 = __VLS_5({
+isOpen: (__VLS_ctx.isOpen),
+target: (__VLS_ctx.target),
+overlay: true,
+}, ...__VLS_functionalComponentArgsRest(__VLS_5));
+__VLS_7.slots!.default;
+const __VLS_8 = ({} as __VLS_WithComponent<'FDiv', __VLS_LocalComponents, void, 'FDiv', 'FDiv', 'FDiv'>).FDiv;
+/** @type {[typeof __VLS_components.FDiv, typeof __VLS_components.FDiv, ]} */;
+// @ts-ignore
+const __VLS_9 = __VLS_asFunctionalComponent(__VLS_8, new __VLS_8({
+direction: "column",
+gap: "small",
+}));
+const __VLS_10 = __VLS_9({
+direction: "column",
+gap: "small",
+}, ...__VLS_functionalComponentArgsRest(__VLS_9));
+__VLS_11.slots!.default;
+const __VLS_12 = ({} as __VLS_WithComponent<'FDialogHeader', __VLS_LocalComponents, void, 'FDialogHeader', 'FDialogHeader', 'FDialogHeader'>).FDialogHeader;
+/** @type {[typeof __VLS_components.FDialogHeader, typeof __VLS_components.FDialogHeader, ]} */;
+// @ts-ignore
+const __VLS_13 = __VLS_asFunctionalComponent(__VLS_12, new __VLS_12({
+...{ 'onCloseDialog': {} as any },
+}));
+const __VLS_14 = __VLS_13({
+...{ 'onCloseDialog': {} as any },
+}, ...__VLS_functionalComponentArgsRest(__VLS_13));
+let __VLS_16!: typeof __VLS_15.emit;
+let __VLS_17!: __VLS_NormalizeEmits<typeof __VLS_16>;
+let __VLS_18!: __VLS_FunctionalComponentProps<typeof __VLS_13, typeof __VLS_14>;
+const __VLS_19: __VLS_NormalizeComponentEvent<typeof __VLS_18, typeof __VLS_17, 'onCloseDialog', 'close-dialog', 'closeDialog'> = {
+onCloseDialog: (__VLS_ctx.close)};
+__VLS_15.slots!.default;
+const __VLS_20 = ({} as __VLS_WithComponent<'FIcon', __VLS_LocalComponents, void, 'FIcon', 'FIcon', 'FIcon'>).FIcon;
+/** @type {[typeof __VLS_components.FIcon, ]} */;
+// @ts-ignore
+const __VLS_21 = __VLS_asFunctionalComponent(__VLS_20, new __VLS_20({
+source: "i-close",
+size: "small",
+}));
+const __VLS_22 = __VLS_21({
+source: "i-close",
+size: "small",
+}, ...__VLS_functionalComponentArgsRest(__VLS_21));
+const __VLS_24 = ({} as __VLS_WithComponent<'FDialogTitle', __VLS_LocalComponents, void, 'FDialogTitle', 'FDialogTitle', 'FDialogTitle'>).FDialogTitle;
+/** @type {[typeof __VLS_components.FDialogTitle, typeof __VLS_components.FDialogTitle, ]} */;
+// @ts-ignore
+const __VLS_25 = __VLS_asFunctionalComponent(__VLS_24, new __VLS_24({
+}));
+const __VLS_26 = __VLS_25({
+}, ...__VLS_functionalComponentArgsRest(__VLS_25));
+__VLS_27.slots!.default;
+var __VLS_27!: __VLS_PickFunctionalComponentCtx<typeof __VLS_24, typeof __VLS_26>;
+var __VLS_15!: __VLS_PickFunctionalComponentCtx<typeof __VLS_12, typeof __VLS_14>;
+for (const [item] of __VLS_getVForSourceType((__VLS_ctx.items)!)) {
+const __VLS_28 = ({} as __VLS_WithComponent<'FDiv', __VLS_LocalComponents, void, 'FDiv', 'FDiv', 'FDiv'>).FDiv;
+/** @type {[typeof __VLS_components.FDiv, typeof __VLS_components.FDiv, ]} */;
+// @ts-ignore
+const __VLS_29 = __VLS_asFunctionalComponent(__VLS_28, new __VLS_28({
+key: (item),
+direction: "row",
+}));
+const __VLS_30 = __VLS_29({
+key: (item),
+direction: "row",
+}, ...__VLS_functionalComponentArgsRest(__VLS_29));
+__VLS_31.slots!.default;
+const __VLS_32 = ({} as __VLS_WithComponent<'FText', __VLS_LocalComponents, void, 'FText', 'FText', 'FText'>).FText;
+/** @type {[typeof __VLS_components.FText, typeof __VLS_components.FText, ]} */;
+// @ts-ignore
+const __VLS_33 = __VLS_asFunctionalComponent(__VLS_32, new __VLS_32({
+variant: "para",
+size: "medium",
+}));
+const __VLS_34 = __VLS_33({
+variant: "para",
+size: "medium",
+}, ...__VLS_functionalComponentArgsRest(__VLS_33));
+__VLS_35.slots!.default;
+( item );
+var __VLS_35!: __VLS_PickFunctionalComponentCtx<typeof __VLS_32, typeof __VLS_34>;
+var __VLS_31!: __VLS_PickFunctionalComponentCtx<typeof __VLS_28, typeof __VLS_30>;
+}
+const __VLS_36 = ({} as __VLS_WithComponent<'FDialogFooter', __VLS_LocalComponents, void, 'FDialogFooter', 'FDialogFooter', 'FDialogFooter'>).FDialogFooter;
+/** @type {[typeof __VLS_components.FDialogFooter, typeof __VLS_components.FDialogFooter, ]} */;
+// @ts-ignore
+const __VLS_37 = __VLS_asFunctionalComponent(__VLS_36, new __VLS_36({
+}));
+const __VLS_38 = __VLS_37({
+}, ...__VLS_functionalComponentArgsRest(__VLS_37));
+__VLS_39.slots!.default;
+const __VLS_40 = ({} as __VLS_WithComponent<'FButton', __VLS_LocalComponents, void, 'FButton', 'FButton', 'FButton'>).FButton;
+/** @type {[typeof __VLS_components.FButton, ]} */;
+// @ts-ignore
+const __VLS_41 = __VLS_asFunctionalComponent(__VLS_40, new __VLS_40({
+...{ 'onClick': {} as any },
+label: "Close",
+}));
+const __VLS_42 = __VLS_41({
+...{ 'onClick': {} as any },
+label: "Close",
+}, ...__VLS_functionalComponentArgsRest(__VLS_41));
+let __VLS_44!: typeof __VLS_43.emit;
+let __VLS_45!: __VLS_NormalizeEmits<typeof __VLS_44>;
+let __VLS_46!: __VLS_FunctionalComponentProps<typeof __VLS_41, typeof __VLS_42>;
+const __VLS_47: __VLS_NormalizeComponentEvent<typeof __VLS_46, typeof __VLS_45, 'onClick', 'click', 'click'> = {
+onClick: (__VLS_ctx.close)};
+var __VLS_43!: __VLS_PickFunctionalComponentCtx<typeof __VLS_40, typeof __VLS_42>;
+var __VLS_39!: __VLS_PickFunctionalComponentCtx<typeof __VLS_36, typeof __VLS_38>;
+var __VLS_11!: __VLS_PickFunctionalComponentCtx<typeof __VLS_8, typeof __VLS_10>;
+var __VLS_7!: __VLS_PickFunctionalComponentCtx<typeof __VLS_4, typeof __VLS_6>;
+var __VLS_3!: __VLS_PickFunctionalComponentCtx<typeof __VLS_0, typeof __VLS_2>;
+/** @type {__VLS_StyleScopedClasses['wrapper']} */;
+type __VLS_Slots = {};
+type __VLS_InheritedAttrs = {};
+type __VLS_TemplateRefs = {
+target: __VLS_NativeElements['div'],
+};
+type __VLS_RootEl = 
+| __VLS_NativeElements['div'];
+var __VLS_dollars!: {
+$slots: __VLS_Slots;
+$attrs: import('vue').ComponentPublicInstance['$attrs'] & Partial<__VLS_InheritedAttrs>;
+$refs: __VLS_TemplateRefs;
+$el: __VLS_RootEl;
+} & { [K in keyof import('vue').ComponentPublicInstance]: unknown };
+const __VLS_self = (await import('vue')).defineComponent({
+setup() {
+return {
+isOpen: isOpen as typeof isOpen,
+target: target as typeof target,
+items: items as typeof items,
+close: close as typeof close,
+};
+},
+});
+export default (await import('vue')).defineComponent({
+setup() {
+return {
+};
+},
+});
+;/* PartiallyEnd: #4569/main.vue */
+
+; declare global {
+	const __VLS_intrinsicElements: __VLS_IntrinsicElements;
+	const __VLS_directiveBindingRestFields: { instance: null, oldValue: null, modifiers: any, dir: any };
+	const __VLS_unref: typeof import('vue').unref;
+	const __VLS_placeholder: any;
+
+	type __VLS_NativeElements = __VLS_SpreadMerge<SVGElementTagNameMap, HTMLElementTagNameMap>;
+	type __VLS_IntrinsicElements = import('vue/jsx-runtime').JSX.IntrinsicElements;
+	type __VLS_Element = import('vue/jsx-runtime').JSX.Element;
+	type __VLS_GlobalComponents = import('vue').GlobalComponents;
+	type __VLS_GlobalDirectives = import('vue').GlobalDirectives;
+	type __VLS_IsAny<T> = 0 extends 1 & T ? true : false;
+	type __VLS_PickNotAny<A, B> = __VLS_IsAny<A> extends true ? B : A;
+	type __VLS_SpreadMerge<A, B> = Omit<A, keyof B> & B;
+	type __VLS_WithComponent<N0 extends string, LocalComponents, Self, N1 extends string, N2 extends string, N3 extends string> =
+		N1 extends keyof LocalComponents ? N1 extends N0 ? Pick<LocalComponents, N0 extends keyof LocalComponents ? N0 : never> : { [K in N0]: LocalComponents[N1] } :
+		N2 extends keyof LocalComponents ? N2 extends N0 ? Pick<LocalComponents, N0 extends keyof LocalComponents ? N0 : never> : { [K in N0]: LocalComponents[N2] } :
+		N3 extends keyof LocalComponents ? N3 extends N0 ? Pick<LocalComponents, N0 extends keyof LocalComponents ? N0 : never> : { [K in N0]: LocalComponents[N3] } :
+		Self extends object ? { [K in N0]: Self } :
+		N1 extends keyof __VLS_GlobalComponents ? N1 extends N0 ? Pick<__VLS_GlobalComponents, N0 extends keyof __VLS_GlobalComponents ? N0 : never> : { [K in N0]: __VLS_GlobalComponents[N1] } :
+		N2 extends keyof __VLS_GlobalComponents ? N2 extends N0 ? Pick<__VLS_GlobalComponents, N0 extends keyof __VLS_GlobalComponents ? N0 : never> : { [K in N0]: __VLS_GlobalComponents[N2] } :
+		N3 extends keyof __VLS_GlobalComponents ? N3 extends N0 ? Pick<__VLS_GlobalComponents, N0 extends keyof __VLS_GlobalComponents ? N0 : never> : { [K in N0]: __VLS_GlobalComponents[N3] } :
+		{ [K in N0]: unknown };
+	type __VLS_FunctionalComponentProps<T, K> =
+		'__ctx' extends keyof __VLS_PickNotAny<K, {}> ? K extends { __ctx?: { props?: infer P } } ? NonNullable<P> : never
+		: T extends (props: infer P, ...args: any) => any ? P :
+		{};
+	type __VLS_IsFunction<T, K> = K extends keyof T
+		? __VLS_IsAny<T[K]> extends false
+		? unknown extends T[K]
+		? false
+		: true
+		: false
+		: false;
+	type __VLS_NormalizeComponentEvent<Props, Events, onEvent extends keyof Props, Event extends keyof Events, CamelizedEvent extends keyof Events> = (
+		__VLS_IsFunction<Props, onEvent> extends true
+			? Props
+			: __VLS_IsFunction<Events, Event> extends true
+				? { [K in onEvent]?: Events[Event] }
+				: __VLS_IsFunction<Events, CamelizedEvent> extends true
+					? { [K in onEvent]?: Events[CamelizedEvent] }
+					: Props
+	) & Record<string, unknown>;
+	// fix https://github.com/vuejs/language-tools/issues/926
+	type __VLS_UnionToIntersection<U> = (U extends unknown ? (arg: U) => unknown : never) extends ((arg: infer P) => unknown) ? P : never;
+	type __VLS_OverloadUnionInner<T, U = unknown> = U & T extends (...args: infer A) => infer R
+		? U extends T
+		? never
+		: __VLS_OverloadUnionInner<T, Pick<T, keyof T> & U & ((...args: A) => R)> | ((...args: A) => R)
+		: never;
+	type __VLS_OverloadUnion<T> = Exclude<
+		__VLS_OverloadUnionInner<(() => never) & T>,
+		T extends () => never ? never : () => never
+	>;
+	type __VLS_ConstructorOverloads<T> = __VLS_OverloadUnion<T> extends infer F
+		? F extends (event: infer E, ...args: infer A) => any
+		? { [K in E & string]: (...args: A) => void; }
+		: never
+		: never;
+	type __VLS_NormalizeEmits<T> = __VLS_PrettifyGlobal<
+		__VLS_UnionToIntersection<
+			__VLS_ConstructorOverloads<T> & {
+				[K in keyof T]: T[K] extends any[] ? { (...args: T[K]): void } : never
+			}
+		>
+	>;
+	type __VLS_PrettifyGlobal<T> = { [K in keyof T]: T[K]; } & {};
+	type __VLS_PickFunctionalComponentCtx<T, K> = NonNullable<__VLS_PickNotAny<
+		'__ctx' extends keyof __VLS_PickNotAny<K, {}> ? K extends { __ctx?: infer Ctx } ? Ctx : never : any
+		, T extends (props: any, ctx: infer Ctx) => any ? Ctx : any
+	>>;
+	type __VLS_UseTemplateRef<T> = Readonly<import('vue').ShallowRef<T | null>>;
+
+	function __VLS_getVForSourceType<T extends number | string | any[] | Iterable<any>>(source: T): [
+		item: T extends number ? number
+			: T extends string ? string
+			: T extends any[] ? T[number]
+			: T extends Iterable<infer T1> ? T1
+			: any,
+		index: number,
+	][];
+	function __VLS_getVForSourceType<T>(source: T): [
+		item: T[keyof T],
+		key: keyof T,
+		index: number,
+	][];
+	// @ts-ignore
+	function __VLS_getSlotParams<T>(slot: T): Parameters<__VLS_PickNotAny<NonNullable<T>, (...args: any[]) => any>>;
+	// @ts-ignore
+	function __VLS_getSlotParam<T>(slot: T): Parameters<__VLS_PickNotAny<NonNullable<T>, (...args: any[]) => any>>[0];
+	function __VLS_asFunctionalDirective<T>(dir: T): T extends import('vue').ObjectDirective
+		? NonNullable<T['created' | 'beforeMount' | 'mounted' | 'beforeUpdate' | 'updated' | 'beforeUnmount' | 'unmounted']>
+		: T extends (...args: any) => any
+			? T
+			: (arg1: unknown, arg2: unknown, arg3: unknown, arg4: unknown) => void;
+	function __VLS_makeOptional<T>(t: T): { [K in keyof T]?: T[K] };
+	function __VLS_asFunctionalComponent<T, K = T extends new (...args: any) => any ? InstanceType<T> : unknown>(t: T, instance?: K):
+		T extends new (...args: any) => any
+		? (props: (K extends { $props: infer Props } ? Props : any) & Record<string, unknown>, ctx?: any) => __VLS_Element & {
+			__ctx?: {
+				attrs?: any;
+				slots?: K extends { $slots: infer Slots } ? Slots : any;
+				emit?: K extends { $emit: infer Emit } ? Emit : any;
+				expose?(exposed: K): void;
+				props?: (K extends { $props: infer Props } ? Props : any) & Record<string, unknown>;
+			}
+		}
+		: T extends () => any ? (props: {}, ctx?: any) => ReturnType<T>
+		: T extends (...args: any) => any ? T
+		: (_: {} & Record<string, unknown>, ctx?: any) => { __ctx?: { attrs?: any, expose?: any, slots?: any, emit?: any, props?: {} & Record<string, unknown> } };
+	function __VLS_functionalComponentArgsRest<T extends (...args: any) => any>(t: T): 2 extends Parameters<T>['length'] ? [any] : [];
+	function __VLS_asFunctionalElement<T>(tag: T, endTag?: T): (attrs: T & Record<string, unknown>) => void;
+	function __VLS_asFunctionalSlot<S>(slot: S): S extends () => infer R ? (props: {}) => R : NonNullable<S>;
+	function __VLS_tryAsConstant<const T>(t: T): T;
+}
