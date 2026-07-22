@@ -484,7 +484,16 @@ func generateScript(base *codegenCtx, scriptSetupEl *vue_ast.ElementNode, script
 			c.serviceText.WriteString(selfType)
 			c.serviceText.WriteString(" : new () => {}, new () => {}>>,\n")
 		} else {
-			c.serviceText.WriteString("...{} as import('vue').ComponentPublicInstance,\n")
+			// Map ComponentPublicInstance members to `unknown` instead of spreading
+			// the full type (as Volar does). Frameworks augment ComponentPublicInstance
+			// / ComponentCustomProperties with heavy generic members (e.g. Nuxt's
+			// `$fetch: $Fetch<AllRoutes>`, a deeply recursive typed-route union). Since
+			// __VLS_ctx doubles as __VLS_LocalComponents / __VLS_LocalDirectives, every
+			// component/directive resolution would otherwise instantiate those members
+			// and blow past the relation checker's depth limit (TS2321 "Excessive stack
+			// depth") on projects with many routes. Templates never need their precise
+			// type, so `unknown` is sufficient and matches vue-tsc's behavior.
+			c.serviceText.WriteString("...{} as { [__VLS_K in keyof import('vue').ComponentPublicInstance]: unknown },\n")
 		}
 		if hasPublicEmits {
 			// Volar uses "typeof emitsVar" for defineEmits, "typeof __VLS_modelEmit" for defineModel
