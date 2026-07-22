@@ -945,6 +945,7 @@ func (t *Tokenizer) stateInEntity() {
 func (t *Tokenizer) parse() {
 	for t.index < len(t.buffer) {
 		c, size := utf8.DecodeRuneInString(t.buffer[t.index:])
+		prevIndex := t.index
 		if c == CharCodeNewLine && t.state != StateInEntity {
 			// TODO:
 			// t.newlines.push(t.index)
@@ -1121,7 +1122,20 @@ func (t *Tokenizer) parse() {
 				break
 			}
 		}
-		t.index += size
+		if t.index != prevIndex {
+			// A state handler (via fastForwardTo) already repositioned t.index onto
+			// a matched character, which is always ASCII (e.g. '-', '>', '<', ']').
+			// `size` was computed for the rune at the START of this iteration, before
+			// the reposition. If that rune was multi-byte (e.g. an accented character
+			// inside an HTML comment), `t.index += size` would skip a byte and
+			// desync the scan — the comment-end sequence `-->` is then never matched,
+			// producing "EOF in comment" and a cascade of "Missing/Invalid end tag".
+			// Advance by one rune from the NEW position instead (mirrors Vue's index++).
+			_, s := utf8.DecodeRuneInString(t.buffer[t.index:])
+			t.index += s
+		} else {
+			t.index += size
+		}
 	}
 	t.cleanup()
 	t.finish()
