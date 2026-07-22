@@ -316,6 +316,9 @@ func parseFile(fs vfs.FS, opts ast.SourceFileParseOptions, sourceText string, sc
 			Version: vueVersion,
 		}
 		serviceText, mappings, ignoreDirectives, expectErrorDirectives, fileDiagnostics = vue_codegen.Codegen(sourceText, vueAst, options)
+		if sub := os.Getenv("TSGO_DUMP_VUE_TS"); sub != "" && strings.Contains(opts.FileName, sub) {
+			_ = os.WriteFile(opts.FileName+".golar.tsx", []byte(serviceText), 0o644)
+		}
 	} else {
 		msg := &diagnostics.Message{}
 		diagnostics.Message_Set_code(msg, 1_000_999)

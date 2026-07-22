@@ -1,6 +1,7 @@
 package checker
 
 import (
+	"fmt"
 	"os"
 	"slices"
 	"strconv"
@@ -3028,9 +3029,40 @@ func dumpOverflowStacks(path string, r *Relater) {
 	for i, t := range r.sourceStack {
 		sb.WriteString(strconv.Itoa(i) + ": " + capType(r.c.TypeToString(t)) + "\n")
 	}
+	kind := func(t *Type) string {
+		s := ""
+		if t.flags&TypeFlagsConditional != 0 {
+			s += "COND "
+		}
+		if t.flags&TypeFlagsIntersection != 0 {
+			s += "INTER "
+		}
+		if isTupleType(t) {
+			s += "TUPLE "
+		}
+		return s
+	}
 	sb.WriteString("=== targetStack (" + strconv.Itoa(len(r.targetStack)) + ") ===\n")
 	for i, t := range r.targetStack {
-		sb.WriteString(strconv.Itoa(i) + ": " + capType(r.c.TypeToString(t)) + "\n")
+		rid := fmt.Sprintf("%v", getRecursionIdentity(t))
+		if len(rid) > 24 {
+			rid = rid[len(rid)-24:]
+		}
+		extra := ""
+		if t.alias != nil {
+			extra += " ALIAS"
+			if t.alias.Symbol() != nil {
+				extra += fmt.Sprintf("(sym=%p)", t.alias.Symbol())
+			}
+		}
+		if t.flags&TypeFlagsIndexedAccess != 0 {
+			lm := t
+			for lm.flags&TypeFlagsIndexedAccess != 0 {
+				lm = lm.AsIndexedAccessType().objectType
+			}
+			extra += fmt.Sprintf(" LEFTMOST[id=%d fl=0x%x sym=%p oflags=0x%x]", int(lm.id), int64(lm.flags), lm.symbol, int(lm.objectFlags))
+		}
+		sb.WriteString(strconv.Itoa(i) + " id=" + strconv.Itoa(int(t.id)) + fmt.Sprintf(" fl=0x%x ", int64(t.flags)) + kind(t) + extra + " rid=" + rid + " : " + capType(r.c.TypeToString(t)) + "\n")
 	}
 	_ = os.WriteFile(path, []byte(sb.String()), 0o644)
 }
@@ -3075,7 +3107,9 @@ func (r *Relater) recursiveTypeRelatedTo(source *Type, target *Type, reportError
 			return TernaryMaybe
 		}
 	}
-	if len(r.sourceStack) == 100 || len(r.targetStack) == 100 {
+	deepSource := len(r.sourceStack) == 100
+	deepTarget := len(r.targetStack) == 100
+	if deepSource || deepTarget {
 		// Diagnostic tool: set TSGO_DUMP_OVERFLOW=<file> to dump the source/target
 		// type stacks of the FIRST relation-comparison overflow (TS2321 "Excessive
 		// stack depth"). Invaluable for pinpointing which recursive type (e.g. a
@@ -3083,6 +3117,23 @@ func (r *Relater) recursiveTypeRelatedTo(source *Type, target *Type, reportError
 		if dumpPath := os.Getenv("TSGO_DUMP_OVERFLOW"); dumpPath != "" && !overflowDumped {
 			overflowDumped = true
 			dumpOverflowStacks(dumpPath, r)
+		}
+		// One-sided depth overflow — one stack unrolls to the limit while the
+		// other stays shallow — is the signature of an ordering-induced growing
+		// recursion (e.g. nitropack `MaxTuple` scoring over a large route union,
+		// or the `UnionToTuple`/`Exclude` family from upstream #929/#4465). Under
+		// tsc's creation-order type sort these converge and are treated as
+		// related; tsgo's stable (alphabetical) sort keeps minting fresh
+		// arity-specific tuple identities so `isDeeplyNestedType` never trips and
+		// the comparison runs to the hard limit. Assume related here — matching
+		// tsc's observable result — rather than emitting a spurious TS2321.
+		// Genuine two-sided deep comparisons still overflow and report.
+		shallow := len(r.sourceStack)
+		if deepSource {
+			shallow = len(r.targetStack)
+		}
+		if deepSource != deepTarget && shallow < 16 {
+			return TernaryMaybe
 		}
 		r.overflow = true
 		return TernaryFalse
