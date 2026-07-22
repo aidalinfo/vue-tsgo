@@ -50,7 +50,38 @@ type languageData struct {
 }
 
 func (h *compilerHostProxy) GetSourceFile(opts ast.SourceFileParseOptions) *ast.SourceFile {
-	if strings.HasSuffix(opts.FileName, ".vue") || strings.HasSuffix(opts.FileName, ".svelte") || strings.HasSuffix(opts.FileName, ".astro") {
+	var ext string
+	switch {
+	case strings.HasSuffix(opts.FileName, ".vue"):
+		ext = ".vue"
+	case strings.HasSuffix(opts.FileName, ".svelte"):
+		ext = ".svelte"
+	case strings.HasSuffix(opts.FileName, ".astro"):
+		ext = ".astro"
+	}
+	if ext != "" {
+		// Packages published for the TS ecosystem (e.g. @nuxt/ui) ship a stub
+		// SFC alongside a companion declaration file that holds the REAL exported
+		// types (X.vue.d.ts and/or X.d.vue.ts). Standard tsc module resolution
+		// would pick that .d.ts, but registering ".vue" as a supported extension
+		// makes the SFC itself win — so compiling the SFC hides those exports and
+		// `export * from './X.vue'` yields nothing (=> TS2614 "no exported member",
+		// then a cascade across the whole @nuxt/ui type surface). Inside
+		// node_modules, prefer the companion declaration when it exists, keeping
+		// the original FileName so the module graph identity is unchanged.
+		if strings.Contains(opts.FileName, "/node_modules/") {
+			candidates := []string{
+				opts.FileName + ".d.ts",                             // X.vue.d.ts
+				strings.TrimSuffix(opts.FileName, ext) + ".d" + ext + ".ts", // X.d.vue.ts
+			}
+			for _, decl := range candidates {
+				if declText, ok := h.CompilerHost.FS().ReadFile(decl); ok {
+					file := parser.ParseSourceFile(opts, declText, core.ScriptKindTS)
+					file.IsDeclarationFile = true
+					return file
+				}
+			}
+		}
 		sourceText, ok := h.CompilerHost.FS().ReadFile(opts.FileName)
 		if !ok {
 			return nil
