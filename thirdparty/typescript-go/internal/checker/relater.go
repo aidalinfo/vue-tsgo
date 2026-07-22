@@ -1,6 +1,7 @@
 package checker
 
 import (
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -3011,6 +3012,29 @@ func (r *Relater) eachTypeRelatedToSomeType(source *Type, target *Type) Ternary 
 // Third, check if both types are part of deeply nested chains of generic type instantiations and if so assume the types are
 // equal and infinitely expanding. Fourth, if we have reached a depth of 100 nested comparisons, assume we have runaway recursion
 // and issue an error. Otherwise, actually compare the structure of the two types.
+var overflowDumped bool
+
+// dumpOverflowStacks writes the source/target type stacks at a relation-comparison
+// depth overflow to the given file. Diagnostic aid gated by TSGO_DUMP_OVERFLOW.
+func dumpOverflowStacks(path string, r *Relater) {
+	var sb strings.Builder
+	capType := func(s string) string {
+		if len(s) > 200 {
+			return s[:200]
+		}
+		return s
+	}
+	sb.WriteString("=== sourceStack (" + strconv.Itoa(len(r.sourceStack)) + ") ===\n")
+	for i, t := range r.sourceStack {
+		sb.WriteString(strconv.Itoa(i) + ": " + capType(r.c.TypeToString(t)) + "\n")
+	}
+	sb.WriteString("=== targetStack (" + strconv.Itoa(len(r.targetStack)) + ") ===\n")
+	for i, t := range r.targetStack {
+		sb.WriteString(strconv.Itoa(i) + ": " + capType(r.c.TypeToString(t)) + "\n")
+	}
+	_ = os.WriteFile(path, []byte(sb.String()), 0o644)
+}
+
 func (r *Relater) recursiveTypeRelatedTo(source *Type, target *Type, reportErrors bool, intersectionState IntersectionState, recursionFlags RecursionFlags) Ternary {
 	if r.overflow {
 		return TernaryFalse
@@ -3052,6 +3076,14 @@ func (r *Relater) recursiveTypeRelatedTo(source *Type, target *Type, reportError
 		}
 	}
 	if len(r.sourceStack) == 100 || len(r.targetStack) == 100 {
+		// Diagnostic tool: set TSGO_DUMP_OVERFLOW=<file> to dump the source/target
+		// type stacks of the FIRST relation-comparison overflow (TS2321 "Excessive
+		// stack depth"). Invaluable for pinpointing which recursive type (e.g. a
+		// deeply-unrolling conditional over a large union) blows the depth limit.
+		if dumpPath := os.Getenv("TSGO_DUMP_OVERFLOW"); dumpPath != "" && !overflowDumped {
+			overflowDumped = true
+			dumpOverflowStacks(dumpPath, r)
+		}
 		r.overflow = true
 		return TernaryFalse
 	}
