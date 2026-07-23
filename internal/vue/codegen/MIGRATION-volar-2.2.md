@@ -65,6 +65,33 @@ what matters is the **per-component body** and the **helper type shapes** matchi
 Each step is gated by the oracle so no step can silently regress — the reason a
 blind rewrite is forbidden (it produces a broken binary).
 
+## Root cause, pinned to exact lines (investigation 2026-07-23)
+
+The dominant residual bucket (slot `row` implicit-any + event handler params +
+downstream index-access = ~180 of 199) traces to **generic SFC consumption**:
+
+- Most heavily-used components on Pulse are generic (`<script setup generic="T">`),
+  e.g. `app/components/shared/DataTable.vue` (the table wrapper used by every
+  list page). Probes confirmed golar *does* resolve `GlobalComponents['DataTable']`
+  and the component is not `any`.
+- golar's generic-SFC codegen (`script.go` ~L584-585) hardcodes the setup-return
+  shape as `slots: {}` and `emit: {}`. Volar emits `slots: __VLS_Slots` (an
+  index-signature type for slot-forwarding components) and `emit: <real emit>`.
+- Consequence downstream: `__VLS_asFunctionalComponent1(genericFn, …)` sees a
+  generic **function** (not `new(...)=>any`), so `__VLS_FunctionalComponentCtx`
+  yields `.slots = {}` / `.emit = {}` → consumer slot destructuring and handler
+  params degrade to implicit-any.
+
+**Why it can't be fixed piecemeal (6 empirical regressions):** golar's generated
+TSX carries many *mutually-masked* latent errors. Changing any single type in the
+component/ctx/slot/emit chain (generic `slots`/`emit`, `__VLS_vSlot`, event-object
+shape) **unmasks** the next layer (e.g. `.slots={}` destructure errors, or latent
+TS1232/TS2307 in unrelated files surfacing), so total error count *rises*
+(199→207/218) even when the change is locally correct. The fix must replace the
+whole generic-consumption chain **coordinatedly**, validated per-fixture against
+the oracle so each unmasked error is resolved in the same pass. That is the
+migration below — it cannot be a one-line patch.
+
 ## Already landed (verified, committed)
 
 - `fix(checker)` one-sided depth overflow → TS2321 5064→0 (`a85f242`;
