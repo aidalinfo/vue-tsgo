@@ -11,10 +11,13 @@ GitHub Actions.
 
 ## Pourquoi
 
-- **~10-50x plus rapide** que `vue-tsc` (Go natif, pas de runtime Node).
+- **~5–25× plus rapide** que `vue-tsc` (Go natif, pas de runtime Node) — le gain
+  dépend du projet. Mesuré sur le monorepo **Pulse ERP** : app ~232s → **~49s**
+  (~4,7×, projet très *check-bound*), site docs ~28s → **~1,5s** (~18×).
 - **Zéro delta d'erreurs sur les fichiers `.vue`** vs `vue-tsc` sur des projets
-  réels. Un léger delta subsiste sur les `.ts/.tsx` (différences amont
-  typescript-go vs tsc) — voir le [README](../README.md#error-parity).
+  réels (vérifié 4 = 4 sur l'app Pulse, 0 = 0 sur les docs). Un léger delta peut
+  subsister sur les `.ts/.tsx` (différences amont typescript-go vs tsc) — voir le
+  [README](../README.md#error-parity).
 - Idéal pour la CI : type-check en quelques secondes au lieu de minutes.
 
 ---
@@ -161,6 +164,43 @@ jobs:
       - name: Typecheck (vue-go-tsc)
         run: pnpm -C app/<name> typecheck:vue
 ```
+
+### Cache du binaire natif en CI
+
+À partir de la **v0.2.0**, le `postinstall` met le binaire téléchargé en cache
+sur disque dans `~/.cache/vue-go-tsc/v<version>/` (surchargeable via
+`VUE_GO_TSC_CACHE_DIR`). En CI, restaurez ce dossier pour éviter de
+re-télécharger le binaire (~27 Mo) à chaque run :
+
+```yaml
+      - name: Cache du binaire vue-go-tsc
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/vue-go-tsc
+          key: ${{ runner.os }}-vue-go-tsc-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: ${{ runner.os }}-vue-go-tsc-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile   # postinstall sert depuis le cache
+```
+
+> Placez le step **avant** `pnpm install` : le `postinstall` lit le cache s'il
+> est présent, sinon il télécharge puis le peuple pour la fois suivante. Un cache
+> froid ou en échec ne casse jamais l'install (repli sur téléchargement direct).
+
+### Monorepo : migrer toutes les apps
+
+Dans un monorepo (plusieurs apps Nuxt), ajoutez `vue-go-tsc` et un script
+`typecheck:go` à **chaque** app, puis pilotez-les d'un coup depuis la racine :
+
+```jsonc
+// package.json racine
+{ "scripts": { "typecheck": "pnpm -r typecheck:go" } }
+// chaque app/<name>/package.json
+{ "scripts": { "typecheck:go": "nuxt prepare && vue-go-tsc --noEmit -p tsconfig.json" } }
+```
+
+En CI, un seul step `pnpm -r typecheck:go` couvre alors toutes les apps.
 
 ---
 

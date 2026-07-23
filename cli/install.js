@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
-const { existsSync, mkdirSync, chmodSync } = require('fs');
+const { existsSync, mkdirSync, chmodSync, copyFileSync } = require('fs');
 const { join } = require('path');
+const os = require('os');
 const https = require('https');
 const { createWriteStream } = require('fs');
 
@@ -9,6 +10,12 @@ const PACKAGE_VERSION = require('./package.json').version;
 const BINARY_NAME = process.platform === 'win32' ? 'tsgo.exe' : 'tsgo';
 const BIN_DIR = join(__dirname, 'bin');
 const BIN_PATH = join(BIN_DIR, BINARY_NAME);
+
+// Shared on-disk cache keyed by version + platform asset name. Lets CI restore
+// the binary across runs (cache ~/.cache/vue-go-tsc) and avoids re-downloading
+// on local reinstalls. Override the location with VUE_GO_TSC_CACHE_DIR.
+const CACHE_ROOT = process.env.VUE_GO_TSC_CACHE_DIR || join(os.homedir(), '.cache', 'vue-go-tsc');
+const CACHE_DIR = join(CACHE_ROOT, `v${PACKAGE_VERSION}`);
 
 // Platform mapping for GitHub releases
 const PLATFORM_MAP = {
@@ -60,6 +67,13 @@ function download(url, dest) {
   });
 }
 
+function finalizeBinary() {
+  // Make executable (Unix-like systems)
+  if (process.platform !== 'win32') {
+    chmodSync(BIN_PATH, 0o755);
+  }
+}
+
 async function install() {
   try {
     // Check if binary already exists (useful for development)
@@ -68,24 +82,41 @@ async function install() {
       return;
     }
 
-    console.log('Installing vue-go-tsc...');
-
-    const platformBinary = getPlatformBinary();
-    const downloadUrl = `https://github.com/aidalinfo/vue-tsgo/releases/download/v${PACKAGE_VERSION}/${platformBinary}`;
-
-    console.log(`Downloading from: ${downloadUrl}`);
-
-    // Ensure bin directory exists
     if (!existsSync(BIN_DIR)) {
       mkdirSync(BIN_DIR, { recursive: true });
     }
 
-    // Download binary
-    await download(downloadUrl, BIN_PATH);
+    const platformBinary = getPlatformBinary();
+    const cachedBinary = join(CACHE_DIR, platformBinary);
 
-    // Make executable (Unix-like systems)
-    if (process.platform !== 'win32') {
-      chmodSync(BIN_PATH, 0o755);
+    // 1) Serve from the shared cache when present (best-effort — a cache miss or
+    //    error just falls through to the download below).
+    try {
+      if (existsSync(cachedBinary)) {
+        copyFileSync(cachedBinary, BIN_PATH);
+        finalizeBinary();
+        console.log(`✓ vue-go-tsc restored from cache (${cachedBinary})`);
+        return;
+      }
+    } catch {
+      // ignore — download is the source of truth
+    }
+
+    // 2) Download from the GitHub Release for this version.
+    const downloadUrl = `https://github.com/aidalinfo/vue-tsgo/releases/download/v${PACKAGE_VERSION}/${platformBinary}`;
+    console.log('Installing vue-go-tsc...');
+    console.log(`Downloading from: ${downloadUrl}`);
+    await download(downloadUrl, BIN_PATH);
+    finalizeBinary();
+
+    // 3) Populate the cache for next time (never fail the install on this).
+    try {
+      if (!existsSync(CACHE_DIR)) {
+        mkdirSync(CACHE_DIR, { recursive: true });
+      }
+      copyFileSync(BIN_PATH, cachedBinary);
+    } catch {
+      // cache is an optimization only
     }
 
     console.log('✓ vue-go-tsc installed successfully!');

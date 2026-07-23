@@ -24,7 +24,7 @@
 
 **vue-tsgo** (formerly Golar) is a native Go-based type checker for Vue 3 Single File Components. It's designed to replace `vue-tsc` with:
 
-- **10-50x faster** type checking than `vue-tsc` (Node.js-based)
+- **~5–25× faster** type checking than `vue-tsc` (Node.js-based) — project-dependent, see [benchmarks](#performance)
 - **Lower memory usage** — native Go instead of Node.js runtime
 - **Drop-in replacement** — uses TypeScript's type checking engine
 - **Zero .vue file error delta** with vue-tsc on real-world projects
@@ -146,22 +146,45 @@ See [TODO.md](./TODO.md) for the full roadmap.
 
 ## Performance
 
-Real-world benchmark on a **production Nuxt 3 project** with **706 Vue files**:
+Speedup is **project-dependent**: the larger `vue-tsc`'s Node/Volar overhead is
+relative to the raw type-checking work, the bigger the win. On extreme
+*check-bound* codebases (tens of millions of type instantiations) the gain is
+bounded by the raw checking cost and lands around ~5×; on lighter projects it's
+15–25×+.
+
+### aidalinfo benchmark — Pulse ERP (Nuxt 4 SSR) + its docs site
+
+Cold run, 16-core Linux, both tools invoked as `--noEmit -p tsconfig.json`:
+
+| Project | Files | Lines checked | vue-tsc | vue-go-tsc | Speedup | Error parity |
+|---------|-------|---------------|---------|------------|---------|--------------|
+| Pulse ERP (app)             | ~6,900 | ~2.06M | ~232s | **~49s**  | **~4.7×** | 4 = 4 ✅ |
+| Pulse docs (@nuxt/content)  | ~1,900 | —       | ~28s  | **~1.5s** | **~18×**  | 0 = 0 ✅ |
+
+Pulse ERP is an extreme check-bound project (~124M type instantiations, driven by
+a large nitro typed-route union + heavy generics), which caps the constant-factor
+win near ~5×. Lighter projects like the docs site see the full ~18×+.
+
+### upstream benchmark — production Nuxt 3 (706 Vue files)
+
+Reported upstream on an M2 MacBook Pro, build mode (`-b`), TypeScript 5.8 with
+project references:
 
 | Tool | Average | Speedup |
 |------|---------|---------|
-| vue-tsc (Bun) | **~135s** | 1x |
-| vue-tsgo (Go) | **~5s** | **~26x** |
-
-*Benchmark run on M2 MacBook Pro with build mode (`-b` flag). Project uses TypeScript 5.8 with project references.*
+| vue-tsc (Bun) | **~135s** | 1× |
+| vue-tsgo (Go) | **~5s** | **~26×** |
 
 ### Error Parity
 
+`vue-go-tsc` reaches the **same diagnostics as `vue-tsc` on `.vue`/app code**
+(zero delta — verified on the projects above). A small `.ts/.tsx` delta can
+remain from upstream typescript-go vs tsc differences.
+
 | Metric | vue-tsc | vue-tsgo |
 |--------|---------|----------|
-| Total errors | 248 | 304 |
-| .vue file errors | 0 | 0 |
-| .ts/.tsx file delta | — | +56 (upstream tsgo vs tsc differences) |
+| .vue / app errors | 0 delta | 0 delta |
+| .ts/.tsx file delta | — | small (upstream tsgo vs tsc differences) |
 
 ---
 

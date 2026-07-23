@@ -41,10 +41,12 @@ See the full [CI integration guide](https://github.com/aidalinfo/vue-tsgo/blob/m
 
 ## Why vue-go-tsc?
 
-- **10-50x faster** than vue-tsc (Node.js-based)
+- **~5–25× faster** than vue-tsc (project-dependent) — e.g. on the Pulse ERP
+  monorepo: app ~232s → **~49s** (~4.7×), docs site ~28s → **~1.5s** (~18×)
 - **Lower memory usage** — native Go instead of Node.js
 - **Drop-in replacement** for vue-tsc
 - **Zero `.vue` file error delta** with vue-tsc on real-world projects
+  (verified 4 = 4 on Pulse ERP, 0 = 0 on its docs site)
 
 ## Documentation
 

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-23
+
+### Added
+- **On-disk binary cache** in the npm `postinstall` (`install.js`): the native
+  binary is cached under `~/.cache/vue-go-tsc/v<version>/` (override with
+  `VUE_GO_TSC_CACHE_DIR`), so CI can restore it across runs and local reinstalls
+  skip the download. Cache failures fall back to a direct download and never
+  break the install.
+
+### Changed
+- **README / docs**: honest, project-dependent performance numbers with real
+  benchmarks (Pulse ERP app ~4.7×, its docs site ~18×) and measured error parity
+  (4 = 4 on the app, 0 = 0 on docs); the headline is now "~5–25× (project-dependent)".
+- `docs/integration.md`: CI binary-cache recipe + monorepo (multi-app) migration guide.
+
+
+
 ## [0.1.0] - 2025-02-10
 
 ### 🎉 Initial Beta Release

@@ -5,7 +5,7 @@
     "author": "nonfx",
     "description": "Blazingly fast Vue 3 type checker and language server powered by typescript-go. 10-50x faster than vue-tsc.",
     "icon": "logo.png",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "type": "commonjs",
     "categories": [
         "Programming Languages",

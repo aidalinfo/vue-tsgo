@@ -1,6 +1,6 @@
 {
   "name": "vue-go-tsc",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Blazingly fast Vue 3 type checker powered by typescript-go — a Go-native alternative to vue-tsc",
   "keywords": [
     "vue",
