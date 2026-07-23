@@ -315,6 +315,14 @@ func parseFile(fs vfs.FS, opts ast.SourceFileParseOptions, sourceText string, sc
 		options := vue_codegen.VueOptions{
 			Version: vueVersion,
 		}
+		// Reference the embedded helper d.ts from the directory that resolves
+		// `vue`, inside a `.golar` subdir. The bare `import('vue/...')`
+		// specifiers inside the helper resolve from there (they cannot from
+		// "/"), which keeps __VLS_Element a real type instead of the error type
+		// that would otherwise poison generic inference in consumers.
+		if vueDir, ok := resolveVueDir(fs, opts.FileName); ok {
+			options.HelperDir = tspath.CombinePaths(vueDir, golarHelperSubdir)
+		}
 		serviceText, mappings, ignoreDirectives, expectErrorDirectives, fileDiagnostics = vue_codegen.Codegen(sourceText, vueAst, options)
 		if sub := os.Getenv("TSGO_DUMP_VUE_TS"); sub != "" && strings.Contains(opts.FileName, sub) {
 			_ = os.WriteFile(opts.FileName+".golar.tsx", []byte(serviceText), 0o644)
@@ -362,6 +370,26 @@ func parseFile(fs vfs.FS, opts ast.SourceFileParseOptions, sourceText string, sc
 	}
 
 	return file
+}
+
+// resolveVueDir returns the nearest ancestor directory of fileName that
+// contains node_modules/vue — i.e. a directory from which `vue` and its
+// subpaths resolve. The embedded helper d.ts must be referenced from here so
+// its own `import('vue/...')` specifiers resolve.
+func resolveVueDir(fs vfs.FS, fileName string) (string, bool) {
+	dir := tspath.GetDirectoryPath(fileName)
+	for {
+		pkgPath := tspath.CombinePaths(dir, "node_modules", "vue", "package.json")
+		if fs != nil && fs.FileExists(pkgPath) {
+			return dir, true
+		}
+		parent := tspath.GetDirectoryPath(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return "", false
 }
 
 func resolveVueVersion(fs vfs.FS, fileName string) (vue_codegen.VueVersion, bool) {
@@ -523,11 +551,70 @@ var GolarExtCallbacks = &golarext.GolarCallbacks{
 	ParseSourceFile:     parseFile,
 }
 
+// golarHelperSubdir is the directory (relative to the vue-resolving directory)
+// under which the embedded helper d.ts are served. The distinctive name avoids
+// shadowing any real user file named template-helpers.d.ts / props-fallback.d.ts.
+const golarHelperSubdir = ".golar"
+
+// golarHelperContent maps helper basenames to their embedded content.
+var golarHelperContent = map[string]string{
+	vue_codegen.TemplateHelpersFileName: vue_codegen.TemplateHelpers,
+	vue_codegen.PropsFallbackFileName:   vue_codegen.PropsFallback,
+}
+
+// helperFS serves the embedded helper d.ts for any path of the form
+// <dir>/.golar/<basename>, regardless of <dir>. The generated code only ever
+// references it from the vue-resolving directory, so exactly one such path is
+// ever loaded per program; matching by suffix lets us avoid knowing that
+// directory when the FS is constructed. Everything else delegates to the base.
+type helperFS struct {
+	vfs.FS
+}
+
+func helperContentFor(path string) (string, bool) {
+	normalized := tspath.NormalizePath(path)
+	if tspath.GetBaseFileName(tspath.GetDirectoryPath(normalized)) != golarHelperSubdir {
+		return "", false
+	}
+	content, ok := golarHelperContent[tspath.GetBaseFileName(normalized)]
+	return content, ok
+}
+
+func (f *helperFS) FileExists(path string) bool {
+	if _, ok := helperContentFor(path); ok {
+		return true
+	}
+	return f.FS.FileExists(path)
+}
+
+func (f *helperFS) ReadFile(path string) (string, bool) {
+	if content, ok := helperContentFor(path); ok {
+		return content, true
+	}
+	return f.FS.ReadFile(path)
+}
+
+func (f *helperFS) Realpath(path string) string {
+	if _, ok := helperContentFor(path); ok {
+		return path
+	}
+	return f.FS.Realpath(path)
+}
+
+func (f *helperFS) DirectoryExists(path string) bool {
+	if tspath.GetBaseFileName(tspath.NormalizePath(path)) == golarHelperSubdir {
+		if f.FS.DirectoryExists(tspath.GetDirectoryPath(tspath.NormalizePath(path))) {
+			return true
+		}
+	}
+	return f.FS.DirectoryExists(path)
+}
+
 func WrapFS(fs vfs.FS) vfs.FS {
-	return utils.NewOverlayVFS(fs, map[string]string{
+	return &helperFS{utils.NewOverlayVFS(fs, map[string]string{
 		vue_codegen.TemplateHelpersPath: vue_codegen.TemplateHelpers,
 		vue_codegen.PropsFallbackPath:   vue_codegen.PropsFallback,
-	})
+	})}
 }
 
 func WrapFourslashFS(globalOptions map[string]string, fs vfs.FS) vfs.FS {
@@ -550,5 +637,5 @@ func WrapFourslashFS(globalOptions map[string]string, fs vfs.FS) vfs.FS {
 			overlay[virtualPath] = string(bytes)
 		}
 	}
-	return utils.NewOverlayVFS(fs, overlay)
+	return &helperFS{utils.NewOverlayVFS(fs, overlay)}
 }

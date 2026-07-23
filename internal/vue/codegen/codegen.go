@@ -17,13 +17,32 @@ import (
 	"github.com/microsoft/typescript-go/shim/diagnostics"
 )
 
-// TODO: relative to cwd or executable location, so vue import works
-// const GlobalTypesPath = utils.GolarVirtualScheme + "vue-global-types.d.ts"
-const TemplateHelpersPath = "/" + "template-helpers.d.ts"
-const PropsFallbackPath = "/" + "props-fallback.d.ts"
-const globalTypesReference = `/// <reference types="` + TemplateHelpersPath + `" />
-/// <reference types="` + PropsFallbackPath + `" />
+const TemplateHelpersFileName = "template-helpers.d.ts"
+const PropsFallbackFileName = "props-fallback.d.ts"
+
+// Default overlay paths (filesystem root). Used as a fallback when no
+// HelperDir is provided (e.g. fourslash tests whose vfs roots node_modules at
+// "/"). For real compilations the helper is referenced from the directory that
+// resolves `vue` (see VueOptions.HelperDir) so that the `import('vue/...')`
+// specifiers *inside* the helper resolve — at "/" they cannot, which collapses
+// __VLS_Element to the error type and poisons downstream generic inference.
+const TemplateHelpersPath = "/" + TemplateHelpersFileName
+const PropsFallbackPath = "/" + PropsFallbackFileName
+
+// globalTypesReference builds the two `/// <reference types="..." />` lines,
+// rooting them at dir (which must be a directory from which `vue` resolves).
+// An empty dir falls back to the filesystem root.
+func globalTypesReference(dir string) string {
+	if dir == "" {
+		dir = "/"
+	}
+	if !strings.HasSuffix(dir, "/") {
+		dir += "/"
+	}
+	return `/// <reference types="` + dir + TemplateHelpersFileName + `" />
+/// <reference types="` + dir + PropsFallbackFileName + `" />
 `
+}
 
 //go:embed types/template-helpers.d.ts
 var TemplateHelpers string
@@ -33,7 +52,7 @@ var PropsFallback string
 
 func Codegen(sourceText string, root *vue_ast.RootNode, options VueOptions) (string, []mapping.Mapping, []mapping.IgnoreDirectiveMapping, []mapping.ExpectErrorDirectiveMapping, []*ast.Diagnostic) {
 	ctx := newCodegenCtx(root, sourceText, options)
-	ctx.serviceText.WriteString(globalTypesReference)
+	ctx.serviceText.WriteString(globalTypesReference(options.HelperDir))
 
 	var scriptEl *vue_ast.ElementNode
 	var scriptSetupEl *vue_ast.ElementNode
@@ -179,6 +198,12 @@ type VueVersion int
 type VueOptions struct {
 	// major * 1_000_000 + minor * 1_000 + patch
 	Version VueVersion
+	// HelperDir is the directory the embedded `template-helpers.d.ts` /
+	// `props-fallback.d.ts` are referenced from. It must be a directory from
+	// which `vue` resolves (typically the nearest ancestor of the .vue file
+	// that contains node_modules/vue), so the `import('vue/...')` specifiers
+	// inside the helpers resolve. Empty falls back to the filesystem root.
+	HelperDir string
 }
 
 func NewVueVersionFromSemver(major, minor, patch int) VueVersion {
