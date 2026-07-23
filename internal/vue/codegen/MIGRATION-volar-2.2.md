@@ -92,6 +92,30 @@ whole generic-consumption chain **coordinatedly**, validated per-fixture against
 the oracle so each unmasked error is resolved in the same pass. That is the
 migration below — it cannot be a one-line patch.
 
+## Consumer-structure deltas (byte-diff, EstablishmentPersonsPanel.vue, 2026-07-23)
+
+The residual `row` TS7022 ("referenced in its own initializer") on generic
+components (`<UTable>` etc.) is a **type-inference circularity** created by
+golar's consumer codegen structure, NOT the helper shapes alone (the
+`__VLS_vSlot` alignment landed but did not move the count — the circularity is
+upstream in how the component value / ctx are declared). Exact deltas to migrate
+in `template.go`:
+
+| Concern | golar (current) | Volar 2.2.x (target) |
+|---|---|---|
+| Component value | `let __VLS_N!: __VLS_WithComponent<'C', Local, Global, void, 'C'>['C'];` | `const __VLS_N = ({} as __VLS_WithComponent<'C', Local, void, 'C', 'C', 'C'>).C;` |
+| `__VLS_WithComponent` sig | `<N0, Local, Global, Self, N1, N2=N1, N3=N1>` (Global as param) | `<N0, Local, Self, N1, N2, N3>` — references `__VLS_GlobalComponents` internally, adds `N1 extends N0 ? Pick<Local, N0> : { [K in N0]: Local[N1] }` refinement |
+| Ctx helper | `__VLS_FunctionalComponentCtx<T,K>` | `__VLS_PickFunctionalComponentCtx<T,K> = NonNullable<__VLS_PickNotAny<…K extends {__ctx?: infer Ctx} ? Ctx : never…, …>>` |
+| Component factory | `__VLS_asFunctionalComponent1` (+ `__VLS_FunctionalComponent1<T>`) | `__VLS_asFunctionalComponent` (ctor branch returns `(props…) => __VLS_Element & { __ctx?: {…} }` inline, fallback `slots?: any`) |
+| Element factory | `__VLS_asFunctionalElement1` / `__VLS_intrinsics` | `__VLS_asFunctionalElement` / `__VLS_intrinsicElements` |
+| Slot params | `__VLS_vSlot` ✅ aligned (`4b1d1ff`) | `__VLS_getSlotParams` |
+| Slot binding var | `const { 'x-cell': __VLS_N } = ctx.slots!` | `const { 'x-cell': __VLS_thisSlot } = ctx.slots!` (name only) |
+
+These move together (helpers + emission) validated per-fixture against
+`volar-2.2.12-reference/`. The `__VLS_WithComponent` signature change + the
+`({} as …).C` value form are the likely circularity-breakers (golar's
+`['C']` index on a Global-param union differs from Volar's internal reference).
+
 ## Already landed (verified, committed)
 
 - `fix(checker)` one-sided depth overflow → TS2321 5064→0 (`a85f242`;
