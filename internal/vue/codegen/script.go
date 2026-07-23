@@ -540,12 +540,13 @@ func generateScript(base *codegenCtx, scriptSetupEl *vue_ast.ElementNode, script
 				c.serviceText.WriteString("export default {} as __VLS_WithSlots<typeof __VLS_component, __VLS_Slots>;\n")
 			}
 			c.serviceText.WriteString(";/* PartiallyEnd: #4569/main.vue */\n")
-			if exposesSlots {
-				c.serviceText.WriteString("type __VLS_WithSlots<T, S> = T & {\n\tnew(): {\n\t\t$slots: S;\n\t\t\n\t}\n};\n")
-			}
+			// Trailing type-alias defs (Volar order: prop-type helpers, then WithSlots).
 			if hasPublicProps {
 				c.serviceText.WriteString("type __VLS_NonUndefinedable<T> = T extends undefined ? never : T;\n")
 				c.serviceText.WriteString("type __VLS_TypePropsToOption<T> = {\n\t[K in keyof T]-?: {} extends Pick<T, K>\n\t\t? { type: import('vue').PropType<__VLS_NonUndefinedable<T[K]>> }\n\t\t: { type: import('vue').PropType<T[K]>, required: true }\n};\n")
+			}
+			if exposesSlots {
+				c.serviceText.WriteString("type __VLS_WithSlots<T, S> = T & {\n\tnew(): {\n\t\t$slots: S;\n\t\t\n\t}\n};\n")
 			}
 		}
 

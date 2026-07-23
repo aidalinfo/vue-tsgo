@@ -83,12 +83,18 @@ func generateTemplate(base *codegenCtx, el *vue_ast.ElementNode) {
 	c.usedVarScopeDepth = 1
 
 	// CSS v-bind(): emit each bound expression (with __VLS_ctx. prefixing) so its
-	// referenced variables are type-checked and tracked as used. Volar emits these
-	// in template scope, before the elements.
+	// referenced variables are type-checked and tracked as used. Volar wraps this
+	// region with `// CSS variable injection` markers when the SFC has a <style scoped>.
+	if c.hasScopedStyle {
+		c.serviceText.WriteString("// CSS variable injection \n")
+	}
 	for _, vbind := range c.cssVBinds {
 		c.serviceText.WriteString("( ")
 		c.mapExpressionInNonBindingPositionTrimmed(vbind)
 		c.serviceText.WriteString(" );\n")
+	}
+	if c.hasScopedStyle {
+		c.serviceText.WriteString("// CSS variable injection end \n")
 	}
 	if el != nil {
 		// Count non-comment, non-whitespace root children for single-root detection
@@ -1317,6 +1323,8 @@ func (c *templateCodegenCtx) emitRefMarker(elem *vue_ast.ElementNode) {
 			c.serviceText.WriteString("/** @type {typeof __VLS_ctx.")
 			c.serviceText.WriteString(attr.Value.Content)
 			c.serviceText.WriteString("} */;\n")
+			// The ref target is accessed via __VLS_ctx → returned by setup().
+			c.allAccessedVars = append(c.allAccessedVars, attr.Value.Content)
 		}
 	}
 }
