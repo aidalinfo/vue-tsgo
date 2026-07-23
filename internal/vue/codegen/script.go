@@ -787,10 +787,27 @@ func (c *scriptCodegenCtx) emitScriptSetupContentWithTypeExtraction(innerStart i
 				}
 				calleeName := callee.Text()
 
+				// The call carrying the type argument to extract. For
+				// `withDefaults(defineProps<T>(), …)` it is the inner defineProps
+				// call, not the outer withDefaults — otherwise `type __VLS_Props`
+				// is never emitted and every `__VLS_PublicProps = __VLS_Props`
+				// reference becomes the error type (poisoning InstanceType and
+				// thus all event-handler/prop inference on the component).
+				typeCall := call
+				if calleeName == "withDefaults" && propsTypeName == "__VLS_Props" &&
+					call.Arguments != nil && len(call.Arguments.Nodes) >= 1 &&
+					ast.IsCallExpression(call.Arguments.Nodes[0]) {
+					inner := call.Arguments.Nodes[0].AsCallExpression()
+					if ast.IsIdentifier(inner.Expression) && inner.Expression.Text() == "defineProps" {
+						typeCall = inner
+					}
+				}
+
 				if (calleeName == "defineProps" && propsTypeName == "__VLS_Props") ||
+					(calleeName == "withDefaults" && propsTypeName == "__VLS_Props" && typeCall != call) ||
 					(calleeName == "defineEmits" && emitsTypeName == "__VLS_Emit") {
-					if call.TypeArguments != nil && len(call.TypeArguments.Nodes) == 1 {
-						typeArg := call.TypeArguments.Nodes[0]
+					if typeCall.TypeArguments != nil && len(typeCall.TypeArguments.Nodes) == 1 {
+						typeArg := typeCall.TypeArguments.Nodes[0]
 						if ast.IsTypeLiteralNode(typeArg) {
 							// Emit content before this statement's leading trivia
 							if pos < stmtStart {
@@ -803,7 +820,7 @@ func (c *scriptCodegenCtx) emitScriptSetupContentWithTypeExtraction(innerStart i
 							typeLiteralContent := c.sourceText[typeStart:typeEnd]
 
 							var extractedTypeName string
-							if calleeName == "defineProps" {
+							if calleeName == "defineProps" || calleeName == "withDefaults" {
 								extractedTypeName = "__VLS_Props"
 							} else {
 								extractedTypeName = "__VLS_Emit"
