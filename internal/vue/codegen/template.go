@@ -849,7 +849,11 @@ func (c *templateCodegenCtx) generateSlotPropsCapture(elem *vue_ast.ElementNode)
 				}
 				c.serviceText.WriteString("),\n")
 			default:
-				c.serviceText.WriteString(dir.Arg)
+				// Camelize the bound slot-prop name (`:initial-name` → initialName)
+				// to match Volar; a raw kebab key here is an unquoted object key
+				// that parses as subtraction (`initial-name` → number), corrupting
+				// the whole slot-props type to `Number` for consumers.
+				camelize(dir.Arg, &c.serviceText)
 				c.serviceText.WriteString(": (")
 				if dir.Expression != nil {
 					c.mapExpressionInNonBindingPosition(dir.Expression)
