@@ -416,12 +416,17 @@ func generateScript(base *codegenCtx, scriptSetupEl *vue_ast.ElementNode, script
 		}
 		c.serviceText.WriteString("defineOptions, withDefaults, }: typeof import('vue');\n")
 
-		// withDefaults(): expose the defaults object so defineComponent can wire
-		// it via __defaults (matches Volar).
+		// withDefaults(): capture the defaults object's type via an identity
+		// function (Volar model). Feeding it to __VLS_WithDefaults below marks
+		// the defaulted props as having a `default`, so vue's types make them
+		// non-optional on the instance — without this every use of a defaulted
+		// prop in the component's own template is `T | undefined` (TS18048), a
+		// false positive vue-tsc never reports. The old `__defaults: <obj>`
+		// wiring did not achieve this.
 		if defaultsArg != nil {
-			c.serviceText.WriteString("const __VLS_defaults = ")
+			c.serviceText.WriteString("const __VLS_withDefaultsArg = (function <T>(t: T) { return t })(")
 			c.mapTextFrom(defaultsArg, c.scriptSetupEl.Ast, innerStart)
-			c.serviceText.WriteString(";\n")
+			c.serviceText.WriteString(");\n")
 		}
 
 		// Emit consolidated model types (Volar-style: __VLS_ModelProps, __VLS_ModelEmit, __VLS_modelEmit)
@@ -531,6 +536,14 @@ func generateScript(base *codegenCtx, scriptSetupEl *vue_ast.ElementNode, script
 			c.serviceText.WriteString(") => ({} as import('vue').VNode & { __ctx?: Awaited<typeof __VLS_setup> }));\n")
 			c.serviceText.WriteString("export default {} as typeof __VLS_export;\n")
 			c.serviceText.WriteString("type __VLS_PrettifyLocal<T> = (T extends any ? { [K in keyof T]: T[K]; } : { [K in keyof T as K]: T[K]; }) & {};\n")
+			// Generic component + withDefaults: emitOptions() above emitted
+			// `props: __VLS_WithDefaults<__VLS_TypePropsToOption<…>, …>`, so these
+			// helper types must be defined (PrettifyLocal already emitted above).
+			if defaultsArg != nil {
+				c.serviceText.WriteString("type __VLS_WithDefaults<P, D> = {\n\t[K in keyof Pick<P, keyof P>]: K extends keyof D\n\t\t? __VLS_PrettifyLocal<P[K] & { default: D[K]}>\n\t\t: P[K]\n};\n")
+				c.serviceText.WriteString("type __VLS_NonUndefinedable<T> = T extends undefined ? never : T;\n")
+				c.serviceText.WriteString("type __VLS_TypePropsToOption<T> = {\n\t[K in keyof T]-?: {} extends Pick<T, K>\n\t\t? { type: import('vue').PropType<__VLS_NonUndefinedable<T[K]>> }\n\t\t: { type: import('vue').PropType<T[K]>, required: true }\n};\n")
+			}
 		} else {
 			// Volar 2.2.x model: __VLS_self carries props/emits (so
 			// InstanceType<__VLS_self> exposes $props/$emit) and its setup() returns
@@ -558,8 +571,14 @@ func generateScript(base *codegenCtx, scriptSetupEl *vue_ast.ElementNode, script
 			c.serviceText.WriteString(";/* PartiallyEnd: #4569/main.vue */\n")
 			// Trailing type-alias defs (Volar order: prop-type helpers, then WithSlots).
 			if hasPublicProps {
+				if defaultsArg != nil {
+					c.serviceText.WriteString("type __VLS_WithDefaults<P, D> = {\n\t[K in keyof Pick<P, keyof P>]: K extends keyof D\n\t\t? __VLS_PrettifyLocal<P[K] & { default: D[K]}>\n\t\t: P[K]\n};\n")
+				}
 				c.serviceText.WriteString("type __VLS_NonUndefinedable<T> = T extends undefined ? never : T;\n")
 				c.serviceText.WriteString("type __VLS_TypePropsToOption<T> = {\n\t[K in keyof T]-?: {} extends Pick<T, K>\n\t\t? { type: import('vue').PropType<__VLS_NonUndefinedable<T[K]>> }\n\t\t: { type: import('vue').PropType<T[K]>, required: true }\n};\n")
+				if defaultsArg != nil {
+					c.serviceText.WriteString("type __VLS_PrettifyLocal<T> = { [K in keyof T]: T[K]; } & {};\n")
+				}
 			}
 			if exposesSlots {
 				c.serviceText.WriteString("type __VLS_WithSlots<T, S> = T & {\n\tnew(): {\n\t\t$slots: S;\n\t\t\n\t}\n};\n")
@@ -684,11 +703,11 @@ func (c *scriptCodegenCtx) emitSelfComponentOptions(innerStart int, hasPublicPro
 			c.mapTextFrom(propsRuntimeArg, c.scriptSetupEl.Ast, innerStart)
 			c.serviceText.WriteString(",\n")
 		} else if hasTypeProps {
-			if defaultsArg != nil {
-				c.serviceText.WriteString("__defaults: __VLS_defaults,\n")
-			}
 			if c.options.Version.supportsTypeProps() {
 				c.serviceText.WriteString("__typeProps: {} as __VLS_PublicProps,\n")
+				if defaultsArg != nil {
+					c.serviceText.WriteString("props: {} as __VLS_WithDefaults<__VLS_TypePropsToOption<__VLS_PublicProps>, typeof __VLS_withDefaultsArg>,\n")
+				}
 			} else {
 				c.serviceText.WriteString("props: {} as unknown as __VLS_TypePropsToOption<__VLS_PublicProps>,\n")
 			}
