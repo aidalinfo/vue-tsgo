@@ -151,3 +151,87 @@ base (0 régression). Commits sur `feat/volar-2.2-model` :
 Corriger l'écart demanderait de toucher la limite d'instanciation du checker
 (risque de faux-accepts / boucles) ou la résolution de types tiers — hors
 « fix codegen sûr ». Le codegen est convergé sur Volar.
+
+---
+
+## MISE À JOUR (session parité 11-vs-6) — tranché CODEGEN-vs-CHECKER : c'est le CHECKER, et le résiduel TS2589 est NON DÉTERMINISTE
+
+État mesuré à `baaf924` : golar `app/pulse` = **11** (TS2589×7 + TS2322×3 + TS2353×1),
+vue-tsc = **6** (TS2589×3 + TS2322×3). Superset confirmé. Aucun fix appliqué
+(aucun fix SÛR n'existe — preuves ci-dessous). Instrumentation de diagnostic
+ajoutée puis **revertée** (`git checkout` checker.go/relater.go) — arbre propre.
+
+### 1. Les TS2589 « en trop » NE SONT PAS du codegen (preuve directe)
+- **Trigger réel = valve `instantiationCount >= 5_000_000`** (PAS `depth==100`),
+  à `depth≈8-12`. Instrumentation à `checker.go:instantiateTypeWithAlias`.
+- **Type qui explose = la machinerie de scoring de routes nitropack** :
+  `CalcMatchScore<MatchedKeys, Route, …>`, `MatchResult`, `MatchedRoutes`,
+  `KeySeg`/`RouteSeg`/`RouteRest`, `Score`, template-literals
+  `` `${KeySeg}/${KeyRest}` `` — enumération combinatoire large (trace : on voit
+  `R extends "/api/workspace/assets/printing-tasks" ? …`). **Même famille que le
+  fix TS2321 déjà accepté** (`a85f242`, nitropack `$Fetch<AllRoutes>` + tri de
+  types STABLE de tsgo vs tri creation-order de tsc → tsgo instancie plus).
+- **Le même code fetch en `.ts` pur ne déborde PAS** ; en `.vue` oui (le binding
+  template USelectMenu `:items="options"` re-instancie le type de route).
+- **DÉCISIF — Volar-codegen-through-tsgo déborde AUSSI** : le dump Volar 2.2.12
+  auto-suffisant (helpers inline, renommés `__VLS2_`) posé dans app/pulse et
+  type-checké par **tsgo** en ISOLATION → **TS2589 count=5_000_000 sur KeySeg**,
+  identique à golar. Donc le codegen golar n'est PAS en cause : c'est tsgo qui
+  sur-instancie les types de routes nitro. vue-tsc est « clean » uniquement parce
+  qu'il tourne sur **TSC** (JS), qui converge sous 5M. (Le test « Volar dump dans
+  le projet complet = pas de 2589 » était un faux négatif : collision
+  `declare global` → helpers empoisonnés en error-type, court-circuitant
+  l'instanciation. En isolation renommée, Volar déborde.)
+
+### 2. Le résiduel TS2589 est NON DÉTERMINISTE (le « 4 en trop » n'existe pas comme liste stable)
+5 mesures répétées (`baaf924`, binaire propre) : **toujours exactement 7 TS2589**,
+mais **membres différents à chaque run** — 7 tirés d'un pool de ~15 composants
+fetch-lourds tous collés à la valve 5M :
+- **Toujours présents (100%) : EstablishmentSelect, PersonSelect, AppShell** ;
+  OpportunitySelect quasi toujours. → ce sont les 3 (+Opp) que vue-tsc signale
+  aussi (les « vraiment au-dessus » même pour tsc).
+- **Rotatifs (varient par run)** : SupplierSelect, CompanyForm, AllocationsSection,
+  OrderLinkSection, EstablishmentPicker, AssetLeaseAssignmentSection,
+  AssetModelSelect, AssetServiceLinkSection, AssetAccountingSection,
+  AssetSimulationSection, AssetSparePartInstancesSection, AssetSpecSchemaEditor,
+  NotificationCenter, useActionCalendarExport, …
+- **Cause** : tsgo type-check en CONCURRENCE ; la valve 5M s'appuie sur le
+  compteur/caches GLOBAUX du checker → quels fichiers « trippent » dépend du
+  scheduling. C'est pourquoi ce doc (§ précédent : AssetLeaseAssignmentSection,
+  AssetModelForm, OrderLinkSection, PersonSelect) et le brief lead (PersonSelect,
+  SupplierSelect, CompanyForm, AllocationsSection) listaient des fichiers
+  DIFFÉRENTS : chacun a capturé un run différent.
+
+### 3. Pourquoi AUCUN fix checker SÛR n'atteint la parité exacte
+- **On ne peut PAS distinguer « vrai » de « en trop »** : EstablishmentSelect
+  (vrai, vu par vue-tsc) et PersonSelect (en trop) trippent par la **MÊME valve
+  COUNT=5M**. Seul `AppShell` tripe par `depth==100`. Supprimer la valve COUNT
+  retirerait AUSSI Establishment/Opportunity (vrais) → parité CASSÉE dans l'autre
+  sens (golar tomberait à 1 TS2589 vs 3).
+- **Relever la limite 5M** ferait converger tsgo comme tsc pour les marginaux,
+  mais (a) risque perf/hang GLOBAL sur tout TS (valve de sécurité), (b) ferait
+  probablement passer aussi les 3 vrais → encore parité cassée, (c) interdit par
+  les garde-fous (preuve de non-régression infaisable).
+- Le seul « vrai » fix = faire instancier tsgo AUSSI PEU que tsc sur le
+  scoring nitro (tri creation-order / caching convergent) = le bug amont
+  #929/#1730/#4465, réécriture checker lourde et risquée. Hors « codegen sûr ».
+
+### 4. TS2353 (MaintenanceKanban `:data-status`) = checker aussi, non trivialement reproductible
+- Codegen **byte-identique** golar/Volar (`dataStatus: (status)` camelisé pareil).
+- `Sortable` (sortablejs-vue3) est un **composant fonctionnel générique**
+  `<GItem>(props: {…} & VNodeProps & AllowedComponentProps & ComponentCustomProps)`
+  SANS index-signature ni `dataStatus`. Strictement `dataStatus` EST en trop ;
+  tsc ne le signale pourtant pas, tsgo si → divergence d'excess-property-check
+  sur props de composant générique.
+- **Repro minimale (générique + `new C({… dataStatus})`) : tsgo == tsc** (les
+  DEUX signalent). Donc la divergence réelle est une interaction plus profonde
+  dans la machinerie `__VLS_asFunctionalComponent` + surcharges `__VLS_setup`/
+  `expose` du Sortable générique — pas isolable minimalement, niveau checker.
+
+### VERDICT
+Codegen **convergé sur Volar** (byte-match maintenu, `volar_comparison` VERT).
+Le résiduel 11-vs-6 est **100% checker** (sur-instanciation nitro + valve 5M
+non déterministe ; excess-check générique), **irréductible sans changement
+checker risqué et parité-cassant**. Gate (b) : l'acquis 200→11 (superset des 6
+réels de vue-tsc, dont TOUJOURS les 3 TS2589 + 3 TS2322 signalés par vue-tsc)
+reste mergeable ; la parité EXACTE 6 n'est pas atteignable en fix sûr.
