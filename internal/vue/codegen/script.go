@@ -122,11 +122,23 @@ func generateScript(base *codegenCtx, scriptSetupEl *vue_ast.ElementNode, script
 		// function so the `generic="T extends ..."` type parameters are in scope
 		// throughout (props type, ctx, template). Matches Volar's codegen; the
 		// matching close + export is emitted at the "Export" section below.
-		// (Import hoisting above the wrapper is a byte-match refinement handled
-		// separately; imports stay inline here — a pre-existing generic-SFC
-		// limitation, TS1232/TS2307 on generic wrappers.)
+		// Imports are HOISTED above the wrapper (import statements cannot live inside
+		// the arrow body — TS1232/TS2307 otherwise); the content emission then starts
+		// after them (hoistedImportsEnd) so they are not re-emitted.
+		hoistedImportsEnd := 0
 		if hasGeneric {
 			c.serviceText.WriteString("/* placeholder */\n")
+			if c.scriptSetupEl.Ast != nil {
+				for _, stmt := range c.scriptSetupEl.Ast.Statements.Nodes {
+					if stmt.Kind != ast.KindImportDeclaration {
+						break // only contiguous leading imports are hoisted
+					}
+					impLoc := utils.TrimNodeTextRange(c.scriptSetupEl.Ast, stmt)
+					c.mapText(innerStart+impLoc.Pos(), innerStart+impLoc.End())
+					c.serviceText.WriteString("\n")
+					hoistedImportsEnd = innerStart + stmt.End()
+				}
+			}
 			c.serviceText.WriteString("const __VLS_export = (<")
 			c.serviceText.WriteString(genericText)
 			c.serviceText.WriteString(",>(\n")
@@ -144,6 +156,10 @@ func generateScript(base *codegenCtx, scriptSetupEl *vue_ast.ElementNode, script
 		if len(c.scriptSetupEl.Children) == 1 {
 			text := c.scriptSetupEl.Children[0].AsText()
 			c.lastMappedPos = text.Loc.Pos()
+			// Generic: skip past the hoisted leading imports so they are not re-emitted.
+			if hoistedImportsEnd > c.lastMappedPos {
+				c.lastMappedPos = hoistedImportsEnd
+			}
 			hasText = true
 		}
 
