@@ -115,3 +115,39 @@ Chaque fix « démasque » la couche suivante (les expr. auparavant `any` se typ
 Outillage : `helperFS`, `resolveVueDir`, byte-match `volar_comparison` VERT,
 `go test ./internal/checker/...` VERT, `go test ./internal/vue/tests/...` = mêmes
 échecs env `node_modules` que la base (non liés).
+
+---
+
+## RÉSULTAT FINAL — cascade déroulée : 139 → 10 (cible vue-tsc = 6)
+
+7 bugs CODEGEN/golar corrigés (aucun checker), tous prouvés (repro minimal +
+byte-match Volar + net en baisse + vue-tsc d'accord), byte-match VERT, checker
+tests VERTS, `internal/vue/tests` = 79 échecs env `node_modules` IDENTIQUES à la
+base (0 régression). Commits sur `feat/volar-2.2-model` :
+
+1. `6926254` helper `/` → `<vueDir>/.golar/` (import('vue/...') résout).  139→122
+2. `58cb5fc` `__VLS_Props` extrait de `withDefaults(defineProps<T>())`.       122→111
+3. `ded83a4` diags supprimés dans la région inference-only `new Comp({...})`.  111→60
+4. `42d6901` `withDefaults` → `__VLS_WithDefaults` (props défautées non-opt).    60→45
+5. `b105d2a` forwarding de slot dynamique `#[name]` + `<slot :name v-bind>`.    (prérequis)
+6. `48d39fe` `type __VLS_Props` émis quand defineModel court-circuite l'extraction
+   (générique + defineModel → T effacé → slot `row: any`).                      45→23
+7. `d55f18a` camelisation des clés de slot-prop `<slot :foo-bar>` (kebab non
+   quoté = soustraction → `Number`).                                            23→10
+
+### Écart résiduel 10 vs 6 = MUR CHECKER (codegen byte-identique à Volar) :
+- **4× TS2589** (AssetLeaseAssignmentSection, AssetModelForm, OrderLinkSection,
+  PersonSelect) — instanciation trop profonde sur les **unions de routes Nitro**
+  (issue connue du projet ; PersonSelect a même un `as string` qui satisfait tsc
+  mais pas tsgo). golar & vue-tsc touchent des FICHIERS DIFFÉRENTS (golar rate
+  OpportunitySelect que vue-tsc a) → divergence de limite de profondeur tsgo↔tsc.
+- **1× TS2353** (MaintenanceKanban `:data-status` sur `<Sortable>`) — codegen
+  byte-identique (`dataStatus:` camelisé comme Volar) ; tsc n'erre pas, tsgo si.
+  Prouvé que ce n'est PAS l'excess-property-check (tsgo==tsc sur
+  `{x} : {…} & Record<string,unknown>`) → le type tiers `Sortable` résout sans
+  l'index signature chez tsgo. Résolution de type tiers, niveau checker.
+- **TS2322=3** (server/lib/ai/aikit/*.ts) = dette réelle partagée avec vue-tsc.
+
+Corriger l'écart demanderait de toucher la limite d'instanciation du checker
+(risque de faux-accepts / boucles) ou la résolution de types tiers — hors
+« fix codegen sûr ». Le codegen est convergé sur Volar.
