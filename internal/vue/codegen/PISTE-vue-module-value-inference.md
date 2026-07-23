@@ -235,3 +235,49 @@ non déterministe ; excess-check générique), **irréductible sans changement
 checker risqué et parité-cassant**. Gate (b) : l'acquis 200→11 (superset des 6
 réels de vue-tsc, dont TOUJOURS les 3 TS2589 + 3 TS2322 signalés par vue-tsc)
 reste mergeable ; la parité EXACTE 6 n'est pas atteignable en fix sûr.
+
+---
+
+## MISE À JOUR (session fix/nitro-instantiation) — delta tsc-vs-tsgo MESURÉ : PAS de divergence structurelle, effet de FRONTIÈRE 5M
+
+Investigation ciblée (option b) avec instrumentation `TSGO_DUMP_INST` (env-gated,
+commit `f65d4c1`) + `--extendedDiagnostics` + comparaison tsc 5.9.3.
+
+### 1. Redondance vs intrinsèque — INTRINSÈQUE (chiffré, par statement qui trippe)
+- worker calls à la valve = 5 000 000 ; **distinct (type+alias+mapper) ≈ 4,5 M (89–91 %)** ;
+  distinct (type+alias, SANS mapper) = **998 à 5 284**. → ~1000 expressions de types
+  évaluées sous ~4,5 M de mappers au contenu GÉNUINEMENT distinct (Score tuples qui
+  grandissent le long des 846 routes). Redondance pointeur (même type+MÊME mapper) = **~9 %**.
+- Caches content-keyed DÉJÀ présents et fonctionnels : `getConditionalTypeInstantiation`
+  → `root.instantiations[getConditionalTypeKey(typeArguments,…)]` (persistant) ;
+  `getTemplateLiteralType` → `templateLiteralTypes[key]` (structurel). Ils ne hit pas
+  car les états sont réellement distincts. → **aucune mémoïsation SÛRE ne passe sous 5M**.
+
+### 2. tsc et tsgo instancient la MÊME quantité (parité à ~0,3 %)
+Repros synthétiques fidèles (types nitro réels + 846 routes + chaîne `$fetch` /
+overloads `useFetch`/`useLazyFetch`), MÊME fichier nourri aux deux :
+| repro | tsgo Instantiations | tsc Instantiations | delta |
+|---|---|---|---|
+| `$fetch` ×2 | 4 792 881 | 4 777 728 | +0,32 % |
+| `useLazyFetch` ×1 | 8 221 180 | 8 197 700 | +0,29 % |
+| bundle ×6 | 8 850 459 | 8 826 996 | +0,27 % |
+| `fetchU(union14)` | 7 069 025 | 7 050 163 | +0,27 % |
+
+### 3. Points de reset du compteur : IDENTIQUES tsc/tsgo (hypothèse "reset manquant" INFIRMÉE)
+tsc reset `instantiationCount=0` dans `checkSourceElement`, `checkDeferredNode`,
+`checkExpression`. tsgo idem : `checkSourceElement` (2181), `checkDeferredNodes` (2443),
+`checkExpressionEx` (7365). Même granularité de "chunk". La valve est PAR expression,
+pas par statement ni globale.
+
+### 4. VERDICT (gate a) — pas de point de divergence exploitable, PAS de fix sûr
+tsgo ne parcourt AUCUNE branche que tsc court-circuite : travail égal à 0,3 %, resets
+identiques. Les 4 TS2589 route-union « en trop » sont un **effet de frontière** : une
+SEULE expression `useFetch`/`useLazyFetch` instancie ~4,5–5 M dans un chunk ; elle tombe
+juste SOUS 5M chez tsc, juste AU-DESSUS chez tsgo. Le **non-déterminisme** (membres
+rotatifs par run) vient du checking concurrent par pool de checkers : l'ordre
+d'attribution des type-ids / hits de caches partagés varie de fractions de % entre runs,
+faisant basculer les composants marginaux d'un côté ou l'autre de 5M. Aucun court-circuit
+sémantique-préservant n'existe ; réduire le ~0,3 % d'écart n'est pas localisable en une
+branche superflue et ne ferait pas passer déterministiquement les 4 sans risquer les 3
+réels ni la correction globale. Relever/dé-globaliser la valve = interdit / gros refactor.
+**Résiduel 11-vs-6 = limitation upstream (#929/#1730/#4465), irréductible en fix sûr.**
