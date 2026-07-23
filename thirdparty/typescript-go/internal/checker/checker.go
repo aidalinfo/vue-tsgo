@@ -6,7 +6,10 @@ import (
 	"iter"
 	"maps"
 	"math"
+	"os"
 	"slices"
+	"sort"
+	"unsafe"
 	"strconv"
 	"strings"
 	"sync"
@@ -586,6 +589,11 @@ type Checker struct {
 	TotalInstantiationCount                     uint32
 	instantiationCount                          uint32
 	instantiationDepth                          uint32
+	instDbgEnabled                              bool
+	instDbgDumped                               bool
+	instDbgWorkerCount                          map[CacheHashKey]uint32
+	instDbgName                                 map[CacheHashKey]string
+	instDbgNoMapper                             map[CacheHashKey]uint32
 	inlineLevel                                 int
 	currentNode                                 *ast.Node
 	varianceTypeParameter                       *Type
@@ -934,6 +942,12 @@ func NewChecker(program Program) (*Checker, *sync.Mutex) {
 	c.instantiationExpressionTypes = make(map[InstantiationExpressionKey]*Type)
 	c.substitutionTypes = make(map[SubstitutionTypeKey]*Type)
 	c.reverseMappedCache = make(map[ReverseMappedTypeKey]*Type)
+	if os.Getenv("TSGO_DUMP_INST") != "" {
+		c.instDbgEnabled = true
+		c.instDbgWorkerCount = make(map[CacheHashKey]uint32)
+		c.instDbgName = make(map[CacheHashKey]string)
+		c.instDbgNoMapper = make(map[CacheHashKey]uint32)
+	}
 	c.reverseHomomorphicMappedCache = make(map[ReverseMappedTypeKey]*Type)
 	c.iterationTypesCache = make(map[IterationTypesKey]IterationTypes)
 	c.undefinedSymbol = c.newSymbol(ast.SymbolFlagsProperty, "undefined")
@@ -21629,6 +21643,10 @@ func (c *Checker) instantiateTypeWithAlias(t *Type, m *TypeMapper, alias *TypeAl
 		// We have reached 100 recursive type instantiations, or 5M type instantiations caused by the same statement
 		// or expression. There is a very high likelihood we're dealing with a combination of infinite generic types
 		// that perpetually generate new type identities, so we stop the recursion here by yielding the error type.
+		if c.instDbgEnabled && !c.instDbgDumped && c.instantiationCount >= 5_000_000 {
+			c.instDbgDumped = true
+			c.instDbgDump()
+		}
 		c.error(c.currentNode, diagnostics.Type_instantiation_is_excessively_deep_and_possibly_infinite)
 		return c.errorType
 	}
@@ -21644,6 +21662,9 @@ func (c *Checker) instantiateTypeWithAlias(t *Type, m *TypeMapper, alias *TypeAl
 	if cachedType, ok := cache[key]; ok {
 		return cachedType
 	}
+	if c.instDbgEnabled {
+		c.instDbgRecord(t, m, alias)
+	}
 	c.TotalInstantiationCount++
 	c.instantiationCount++
 	c.instantiationDepth++
@@ -21655,6 +21676,126 @@ func (c *Checker) instantiateTypeWithAlias(t *Type, m *TypeMapper, alias *TypeAl
 	}
 	c.instantiationDepth--
 	return result
+}
+
+// instDbgTypeName returns a cheap human-readable label for a type, WITHOUT
+// triggering any further instantiation (no typeToString).
+func (c *Checker) instDbgTypeName(t *Type) string {
+	name := ""
+	if t.alias != nil && t.alias.symbol != nil {
+		name = t.alias.symbol.Name
+	} else if t.symbol != nil {
+		name = t.symbol.Name
+	}
+	var cat string
+	switch {
+	case t.flags&TypeFlagsConditional != 0:
+		cat = "Conditional"
+	case t.flags&TypeFlagsTemplateLiteral != 0:
+		cat = "TemplateLiteral"
+	case t.flags&TypeFlagsStringMapping != 0:
+		cat = "StringMapping"
+	case t.flags&TypeFlagsIndexedAccess != 0:
+		cat = "IndexedAccess"
+	case t.flags&TypeFlagsIndex != 0:
+		cat = "Index"
+	case t.flags&TypeFlagsSubstitution != 0:
+		cat = "Substitution"
+	case t.flags&TypeFlagsUnion != 0:
+		cat = "Union"
+	case t.flags&TypeFlagsIntersection != 0:
+		cat = "Intersection"
+	case t.objectFlags&ObjectFlagsMapped != 0:
+		cat = "Mapped"
+	case t.objectFlags&ObjectFlagsReference != 0:
+		cat = "Reference"
+	case t.objectFlags&ObjectFlagsAnonymous != 0:
+		cat = "Anonymous"
+	case t.flags&TypeFlagsObject != 0:
+		cat = "Object"
+	default:
+		cat = "Other"
+	}
+	if name == "" {
+		name = "<anon>"
+	}
+	return cat + ":" + name
+}
+
+func (c *Checker) instDbgRecord(t *Type, m *TypeMapper, alias *TypeAlias) {
+	// Reset per statement: instantiationCount is reset to 0 between statements,
+	// so a fresh record run starting from 0 means a new statement.
+	if c.instantiationCount == 0 && len(c.instDbgWorkerCount) > 0 {
+		clear(c.instDbgWorkerCount)
+		clear(c.instDbgName)
+		clear(c.instDbgNoMapper)
+		c.instDbgDumped = false
+	}
+	var b keyBuilder
+	b.writeType(t)
+	b.writeAlias(alias)
+	// Key without mapper: measures how much the SAME (type,alias) is recomputed
+	// across DIFFERENT mappers (would a mapper-content-normalized cache help?).
+	nmk := b.hash()
+	c.instDbgNoMapper[nmk]++
+	// Fold the mapper identity into the debug key so that identical (type,alias)
+	// under DIFFERENT mappers count as distinct, and identical inputs under the
+	// SAME mapper count as redundant recomputation.
+	hashWrite64(&b.h, uint64(uintptr(unsafe.Pointer(m))))
+	dk := b.hash()
+	c.instDbgWorkerCount[dk]++
+	if _, ok := c.instDbgName[dk]; !ok {
+		c.instDbgName[dk] = c.instDbgTypeName(t)
+	}
+}
+
+func (c *Checker) instDbgDump() {
+	var total uint64
+	var maxCount uint32
+	distinct := len(c.instDbgWorkerCount)
+	byName := make(map[string]uint64)
+	distinctByName := make(map[string]int)
+	redundantByName := make(map[string]uint64) // sum of (count-1) per key
+	for dk, cnt := range c.instDbgWorkerCount {
+		total += uint64(cnt)
+		if cnt > maxCount {
+			maxCount = cnt
+		}
+		nm := c.instDbgName[dk]
+		byName[nm] += uint64(cnt)
+		distinctByName[nm]++
+		redundantByName[nm] += uint64(cnt - 1)
+	}
+	type row struct {
+		name          string
+		calls         uint64
+		distinct      int
+		redundant     uint64
+	}
+	rows := make([]row, 0, len(byName))
+	for nm, calls := range byName {
+		rows = append(rows, row{nm, calls, distinctByName[nm], redundantByName[nm]})
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].calls > rows[j].calls })
+	var totalRedundant uint64
+	for _, r := range rows {
+		totalRedundant += r.redundant
+	}
+	fmt.Fprintf(os.Stderr, "\n=== TSGO_DUMP_INST (valve tripped) ===\n")
+	fmt.Fprintf(os.Stderr, "worker calls (this statement): %d\n", total)
+	fmt.Fprintf(os.Stderr, "distinct (type+alias+mapper) keys: %d\n", distinct)
+	distinctNoMapper := len(c.instDbgNoMapper)
+	fmt.Fprintf(os.Stderr, "distinct (type+alias, NO mapper) keys: %d  -> max saving from content-cache = %.1f%%\n", distinctNoMapper, 100*float64(total-uint64(distinctNoMapper))/float64(total))
+	fmt.Fprintf(os.Stderr, "redundant recompute (calls-distinct): %d (%.1f%%)\n", totalRedundant, 100*float64(totalRedundant)/float64(total))
+	fmt.Fprintf(os.Stderr, "max recompute of a single key: %d\n", maxCount)
+	fmt.Fprintf(os.Stderr, "--- top 25 by total worker calls (name: calls, distinctKeys, redundant) ---\n")
+	for i, r := range rows {
+		if i >= 25 {
+			break
+		}
+		fmt.Fprintf(os.Stderr, "  %-40s calls=%-10d distinct=%-10d redundant=%d\n", r.name, r.calls, r.distinct, r.redundant)
+	}
+	fmt.Fprintf(os.Stderr, "=======================================\n")
 }
 
 func (c *Checker) pushActiveMapper(mapper *TypeMapper) {
