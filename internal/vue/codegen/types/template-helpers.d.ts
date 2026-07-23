@@ -120,7 +120,8 @@ declare global {
 		: T extends (infer U)[] ? [U, number][]
 		: T extends Iterable<infer V> ? [V, number][]
 		: [T[keyof T], `${keyof T & (string | number)}`, number][];
-	function __VLS_vSlot<S, D extends S>(slot: S, decl?: D): D extends (...args: infer P) => any ? P : any[];
+	// @ts-ignore
+	function __VLS_vSlot<S, D = void>(slot: S, decl?: D): D extends (...args: infer P) => any ? P : Parameters<__VLS_PickNotAny<NonNullable<S>, (...args: any[]) => any>>;
 	function __VLS_asFunctionalDirective<T, ObjectDirective>(
 		dir: T,
 		od: ObjectDirective,
