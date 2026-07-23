@@ -31,6 +31,13 @@ type scriptCodegenCtx struct {
 
 	seenDefineModels collections.Set[string]
 	defineModels     []defineModelInfo
+
+	// propsAliasEmitted records whether `type __VLS_Props = …` was already
+	// emitted by the type-extraction pass. When defineModel is present its
+	// first-pass handling emits the preceding defineProps statement verbatim,
+	// so extraction is skipped and the alias must be emitted explicitly (else
+	// __VLS_PublicProps = __VLS_Props & __VLS_ModelProps dangles → error type).
+	propsAliasEmitted bool
 }
 
 func generateScript(base *codegenCtx, scriptSetupEl *vue_ast.ElementNode, scriptEl *vue_ast.ElementNode, templateEl *vue_ast.ElementNode) {
@@ -176,6 +183,9 @@ func generateScript(base *codegenCtx, scriptSetupEl *vue_ast.ElementNode, script
 			emitsRuntimeArg *ast.Node
 			// withDefaults() second argument (the defaults object literal), if any.
 			defaultsArg *ast.Node
+			// Source text of an inline props type literal (defineProps<{...}>),
+			// used to emit `type __VLS_Props` when extraction is bypassed.
+			propsInlineLiteral string
 		)
 
 		// TODO: report nested compiler macros (vue compiler errors on them)
@@ -244,6 +254,7 @@ func generateScript(base *codegenCtx, scriptSetupEl *vue_ast.ElementNode, script
 							typeArg := call.TypeArguments.Nodes[0]
 							if ast.IsTypeLiteralNode(typeArg) {
 								propsTypeName = "__VLS_Props"
+								propsInlineLiteral = c.sourceText[innerStart+typeArg.Pos() : innerStart+typeArg.End()]
 							} else if ast.IsTypeReferenceNode(typeArg) {
 								propsTypeName = typeArg.AsTypeReferenceNode().TypeName.Text()
 							}
@@ -431,6 +442,19 @@ func generateScript(base *codegenCtx, scriptSetupEl *vue_ast.ElementNode, script
 
 		// Emit consolidated model types (Volar-style: __VLS_ModelProps, __VLS_ModelEmit, __VLS_modelEmit)
 		c.emitModelTypes()
+
+		// If the props type literal was extracted-by-reference (__VLS_Props) but
+		// the extraction pass never emitted the alias (defineModel's first-pass
+		// handling emitted the defineProps statement verbatim, bypassing it),
+		// emit it now so `__VLS_PublicProps = __VLS_Props & …` below resolves
+		// instead of dangling to the error type (which would erase the generic T
+		// on the whole component → `any` slot/prop params downstream).
+		if propsTypeName == "__VLS_Props" && !c.propsAliasEmitted && propsInlineLiteral != "" {
+			c.serviceText.WriteString("type __VLS_Props = ")
+			c.serviceText.WriteString(propsInlineLiteral)
+			c.serviceText.WriteString(";\n")
+			c.propsAliasEmitted = true
+		}
 
 		// __VLS_PublicProps — Volar always emits this: the type-only props/models
 		// intersection, or `{}` when there are none (runtime props go via `props:`).
@@ -861,6 +885,9 @@ func (c *scriptCodegenCtx) emitScriptSetupContentWithTypeExtraction(innerStart i
 							c.serviceText.WriteString(" = ")
 							c.serviceText.WriteString(typeLiteralContent)
 							c.serviceText.WriteString(";\n")
+							if extractedTypeName == "__VLS_Props" {
+								c.propsAliasEmitted = true
+							}
 
 							// Emit the variable declaration with the extracted type reference
 							// "const props = defineProps<__VLS_Props>()"
