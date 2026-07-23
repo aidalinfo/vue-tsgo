@@ -67,8 +67,9 @@ type templateCodegenCtx struct {
 }
 
 type slotPropInfo struct {
-	name     string // slot name (empty = default)
+	name     string // static slot name (used when nameVar == "")
 	propsVar string // variable name for slot props
+	nameVar  string // for a dynamic <slot :name="expr">: var holding __VLS_tryAsConstant(expr)
 }
 
 func newTemplateCodegenCtx(base *codegenCtx) templateCodegenCtx {
@@ -689,7 +690,15 @@ func (c *templateCodegenCtx) visit(el *vue_ast.Node) {
 				// on generic-component slot destructuring.
 				c.enterScope()
 				c.serviceText.WriteString("{\nconst { ")
-				if slotDirective.Arg == "" {
+				if !slotDirective.IsStatic && slotDirective.Arg != "" {
+					// Dynamic slot name (#[expr]="…"): computed-key destructuring so
+					// the forwarded slot resolves against the parent's slot map by
+					// its runtime name (Volar model). A literal key would miss it,
+					// collapsing the scope to `any`.
+					c.serviceText.WriteString("[__VLS_tryAsConstant(")
+					c.serviceText.WriteString(slotDirective.Arg)
+					c.serviceText.WriteString(")]: ")
+				} else if slotDirective.Arg == "" {
 					c.serviceText.WriteString("default: ")
 				} else if needsQuoting(slotDirective.Arg) {
 					c.serviceText.WriteByte('\'')
@@ -788,6 +797,7 @@ func (c *templateCodegenCtx) visit(el *vue_ast.Node) {
 // generateSlotPropsCapture generates slot prop variable capture for <slot> elements.
 func (c *templateCodegenCtx) generateSlotPropsCapture(elem *vue_ast.ElementNode) {
 	slotName := ""
+	var dynamicNameExpr *vue_ast.SimpleExpressionNode // <slot :name="expr">
 	propsVar := c.newInternalVariable()
 
 	c.serviceText.WriteString("var ")
@@ -817,7 +827,28 @@ func (c *templateCodegenCtx) generateSlotPropsCapture(elem *vue_ast.ElementNode)
 			c.serviceText.WriteString(",\n")
 		case vue_ast.KindDirective:
 			dir := prop.AsDirective()
-			if dir.Name == "bind" && dir.Arg != "" {
+			if dir.Name != "bind" {
+				continue
+			}
+			switch dir.Arg {
+			case "name":
+				// Dynamic slot name (<slot :name="expr">): the slot NAME, not a
+				// prop. Captured separately below via __VLS_tryAsConstant so
+				// __VLS_Slots becomes a mapped type over the forwarded names.
+				dynamicNameExpr = dir.Expression
+			case "":
+				// v-bind="obj" on <slot>: spread the forwarded scope so the slot
+				// props type carries it (Volar model). Without this a wrapper that
+				// forwards `<slot v-bind="scope"/>` loses the scope's type and
+				// consumers get `any` slot params (TS7006/TS7053). Emit the source
+				// expression verbatim inside the spread (do not add `?? {}` — the
+				// source supplies its own nullish guard when needed).
+				c.serviceText.WriteString("...(")
+				if dir.Expression != nil {
+					c.mapExpressionInNonBindingPosition(dir.Expression)
+				}
+				c.serviceText.WriteString("),\n")
+			default:
 				c.serviceText.WriteString(dir.Arg)
 				c.serviceText.WriteString(": (")
 				if dir.Expression != nil {
@@ -829,13 +860,24 @@ func (c *templateCodegenCtx) generateSlotPropsCapture(elem *vue_ast.ElementNode)
 	}
 	c.serviceText.WriteString("};\n")
 
-	if slotName == "" {
+	nameVar := ""
+	if dynamicNameExpr != nil {
+		nameVar = c.newInternalVariable()
+		c.serviceText.WriteString("var ")
+		c.serviceText.WriteString(nameVar)
+		c.serviceText.WriteString(" = __VLS_tryAsConstant(")
+		c.mapExpressionInNonBindingPosition(dynamicNameExpr)
+		c.serviceText.WriteString(");\n")
+	}
+
+	if slotName == "" && dynamicNameExpr == nil {
 		slotName = "default"
 	}
 
 	c.slotProps = append(c.slotProps, slotPropInfo{
 		name:     slotName,
 		propsVar: propsVar,
+		nameVar:  nameVar,
 	})
 }
 
@@ -844,6 +886,25 @@ func (c *templateCodegenCtx) generateSlotTypes() {
 	// Emit: // @ts-ignore\nvar __VLS_N = __VLS_M, ;
 	// Then: type __VLS_Slots = {} & { name?: (props: typeof __VLS_N) => any };
 	for i := range c.slotProps {
+		if c.slotProps[i].nameVar != "" {
+			// Dynamic-name slot: hoist both the name var and the props var out of
+			// the (v-for) block scope so the mapped __VLS_Slots type below can
+			// reference them.
+			nextName := c.newInternalVariable()
+			nextProps := c.newInternalVariable()
+			c.serviceText.WriteString("// @ts-ignore\nvar ")
+			c.serviceText.WriteString(nextName)
+			c.serviceText.WriteString(" = ")
+			c.serviceText.WriteString(c.slotProps[i].nameVar)
+			c.serviceText.WriteString(", ")
+			c.serviceText.WriteString(nextProps)
+			c.serviceText.WriteString(" = ")
+			c.serviceText.WriteString(c.slotProps[i].propsVar)
+			c.serviceText.WriteString(", ;\n")
+			c.slotProps[i].nameVar = nextName
+			c.slotProps[i].propsVar = nextProps
+			continue
+		}
 		nextVar := c.newInternalVariable()
 		c.serviceText.WriteString("// @ts-ignore\nvar ")
 		c.serviceText.WriteString(nextVar)
@@ -858,6 +919,15 @@ func (c *templateCodegenCtx) generateSlotTypes() {
 	// type after the first member, making the rest a syntax error (multi-slot).
 	c.serviceText.WriteString("type __VLS_Slots = {}")
 	for _, sp := range c.slotProps {
+		if sp.nameVar != "" {
+			// Mapped type over the forwarded (dynamic) slot names.
+			c.serviceText.WriteString("\n& { [K in NonNullable<typeof ")
+			c.serviceText.WriteString(sp.nameVar)
+			c.serviceText.WriteString(">]?: (props: typeof ")
+			c.serviceText.WriteString(sp.propsVar)
+			c.serviceText.WriteString(") => any }")
+			continue
+		}
 		c.serviceText.WriteString("\n& { ")
 		if needsQuoting(sp.name) {
 			c.serviceText.WriteString("'")
