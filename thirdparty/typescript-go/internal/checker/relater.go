@@ -3110,28 +3110,16 @@ func (r *Relater) recursiveTypeRelatedTo(source *Type, target *Type, reportError
 	deepSource := len(r.sourceStack) == 100
 	deepTarget := len(r.targetStack) == 100
 	if deepSource || deepTarget {
-		// Diagnostic tool: set TSGO_DUMP_OVERFLOW=<file> to dump the source/target
-		// type stacks of the FIRST relation-comparison overflow (TS2321 "Excessive
-		// stack depth"). Invaluable for pinpointing which recursive type (e.g. a
-		// deeply-unrolling conditional over a large union) blows the depth limit.
 		if dumpPath := os.Getenv("TSGO_DUMP_OVERFLOW"); dumpPath != "" && !overflowDumped {
 			overflowDumped = true
 			dumpOverflowStacks(dumpPath, r)
 		}
-		// One-sided depth overflow — one stack unrolls to the limit while the
-		// other stays shallow — is the signature of an ordering-induced growing
-		// recursion (e.g. nitropack `MaxTuple` scoring over a large route union,
-		// or the `UnionToTuple`/`Exclude` family from upstream #929/#4465). Under
-		// tsc's creation-order type sort these converge and are treated as
-		// related; tsgo's stable (alphabetical) sort keeps minting fresh
-		// arity-specific tuple identities so `isDeeplyNestedType` never trips and
-		// the comparison runs to the hard limit. Assume related here — matching
-		// tsc's observable result — rather than emitting a spurious TS2321.
-		// Genuine two-sided deep comparisons still overflow and report.
 		shallow := len(r.sourceStack)
 		if deepSource {
 			shallow = len(r.targetStack)
 		}
+		// One-sided depth overflow (one stack at the limit, the other shallow):
+		// assume related instead of reporting a spurious excessive-depth error.
 		if deepSource != deepTarget && shallow < 16 {
 			return TernaryMaybe
 		}
