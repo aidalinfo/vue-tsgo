@@ -557,7 +557,18 @@ func (c *templateCodegenCtx) visit(el *vue_ast.Node) {
 			c.serviceText.WriteString("({\n")
 			// Skip used var tracking for constructor props (Volar generates propCodes once, yields twice)
 			c.skipUsedVarTracking = true
+			// The `new Comp({...})` props are inference-only (they drive K in
+			// __VLS_asFunctionalComponent); the real prop/handler validation is
+			// the __VLS_N({...}) call below. Volar marks this region
+			// non-verification. Without that, function-valued props emit their
+			// handler bodies here with implicitly-any params (e.g.
+			// `:on-save="(v) => …"` → TS7006) since the constructor param is
+			// untyped — a false positive vue-tsc never reports. Suppress
+			// diagnostics for exactly this region (the __VLS_N call still
+			// validates the props for real).
+			ctorPropsStart := c.serviceText.Len()
 			c.generateElementPropsFiltered(elem, true, dynamicComponentExpr)
+			c.mapIgnoreDirective(ctorPropsStart, c.serviceText.Len())
 			c.skipUsedVarTracking = false
 			c.serviceText.WriteString("}));\n")
 
