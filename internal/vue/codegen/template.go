@@ -498,9 +498,9 @@ func (c *templateCodegenCtx) visit(el *vue_ast.Node) {
 				componentVar = c.newInternalVariable()
 				c.serviceText.WriteString("const ")
 				c.serviceText.WriteString(componentVar)
-				c.serviceText.WriteString(" = (")
+				c.serviceText.WriteString(" = ((")
 				c.mapExpressionInNonBindingPosition(dynamicComponentExpr.Expression)
-				c.serviceText.WriteString(");\n")
+				c.serviceText.WriteString("));\n")
 				compRef = componentVar
 				typeRef = "typeof " + componentVar
 			} else if isImported {
@@ -529,14 +529,17 @@ func (c *templateCodegenCtx) visit(el *vue_ast.Node) {
 			}
 
 			// /** @type {[typeRef, (typeRef,) ]} */; — 2 entries unless self-closing.
-			c.serviceText.WriteString("/** @type {[")
-			c.serviceText.WriteString(typeRef)
-			c.serviceText.WriteString(", ")
-			if !elem.IsSelfClosing {
+			// Volar omits this marker for dynamic (<component :is>) components.
+			if dynamicComponentExpr == nil {
+				c.serviceText.WriteString("/** @type {[")
 				c.serviceText.WriteString(typeRef)
 				c.serviceText.WriteString(", ")
+				if !elem.IsSelfClosing {
+					c.serviceText.WriteString(typeRef)
+					c.serviceText.WriteString(", ")
+				}
+				c.serviceText.WriteString("]} */;\n")
 			}
-			c.serviceText.WriteString("]} */;\n")
 
 			functionalVar = c.newInternalVariable()
 			c.serviceText.WriteString("// @ts-ignore\nconst ")
