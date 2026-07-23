@@ -170,12 +170,28 @@ jobs:
           path: release
           merge-multiple: true
 
+      # Download each binary artifact into its own folder (NOT merged): every
+      # artifact contains a file literally named `tsgo`/`tsgo.exe`, so merging
+      # would collapse all platforms onto the same two filenames. The artifact
+      # NAME is the per-platform asset name (tsgo-linux-amd64, ...), which is
+      # exactly what cli/install.js downloads — so we rename accordingly.
       - name: Download all binary artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: tsgo-*
-          path: release
-          merge-multiple: true
+          path: binaries
+
+      - name: Stage binaries with platform-specific names
+        run: |
+          set -e
+          mkdir -p release
+          for dir in binaries/*/; do
+            asset=$(basename "$dir")           # e.g. tsgo-linux-amd64 / tsgo-windows-amd64.exe
+            file=$(ls "$dir" | head -n1)       # the binary inside: tsgo or tsgo.exe
+            cp "$dir$file" "release/$asset"
+            echo "staged release/$asset (from $file)"
+          done
+          echo "=== release/ contents ==="; ls -la release/
 
       - name: Generate release notes
         id: notes
