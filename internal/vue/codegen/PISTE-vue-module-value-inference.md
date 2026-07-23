@@ -63,3 +63,55 @@ Reporter en amont (microsoft/typescript-go ou vue-tsgo) comme limitation
 « inférence générique niveau-valeur sur default-import d'un module `.vue` », avec
 cette matrice comme repro. La migration codegen (200→139, modèle Volar 2.2.x,
 circularité éliminée) reste un acquis mergeable indépendamment.
+
+---
+
+## MISE À JOUR (session dédiée) — hypothèse initiale INFIRMÉE, 2 causes réelles corrigées
+
+**L'hypothèse « l'enfant est un module `.vue` » est FAUSSE.** Matrice re-testée
+proprement : un `.ts` on-disk avec le code généré EXACT (même important `./Child.vue`)
+type correctement `payload` ; le déclencheur réel est **le consommateur `.vue`**,
+puis, plus profond, deux bugs distincts (aucun lié à l'inférence niveau-valeur sur
+default-import) :
+
+### Cause #1 (CORRIGÉE, commit 6926254) — helper d.ts monté à la racine `/`
+`template-helpers.d.ts` overlayé à `/template-helpers.d.ts`. Les specifiers
+`import('vue/jsx-runtime')` / `import('vue')` DANS le helper ne résolvent pas
+depuis `/` (pas de `/node_modules`) → `__VLS_Element` = **error type** (pas juste
+`any`). L'error type se propage par le retour ctor de `__VLS_asFunctionalComponent`
+et **empoisonne les conditionnels** (`__VLS_IsAny<errorType>` = errorType, pas
+true/false) → `__VLS_FunctionalComponentProps`/`PickNotAny` = errorType → param
+handler `any` (TS7006/7053). Preuve : `import('vue/jsx-runtime').JSX.Element` écrit
+directement dans un `.vue` = `Element` ; via le helper à `/` = error type.
+**Fix** : référencer le helper depuis `<dirRésolvantVue>/.golar/` (walk-up comme
+`resolveVueVersion`), servi par un `helperFS` (match suffixe `/.golar/<basename>`).
+Effet : 139 → 122 (TS7006 102→83).
+
+### Cause #2 (CORRIGÉE, commit 58cb5fc) — `__VLS_Props` non extrait pour `withDefaults`
+`emitScriptSetupContentWithTypeExtraction` n'extrayait `type __VLS_Props = T` que
+pour un `defineProps` initializer DIRECT. Pour `withDefaults(defineProps<T>(), d)`
+l'alias n'était jamais émis alors que `__VLS_PublicProps = __VLS_Props` y référait
+→ `__VLS_Props` = error type → `__typeProps` empoisonné → `InstanceType<Composant>`
+(`$props`/`$emit`) = error type → tout handler/prop-callback sur un composant
+`withDefaults` = `any`. Prouvé en programme MINIMAL (pas d'échelle). **Fix** :
+déballer `withDefaults` vers le `defineProps` interne dans l'extraction.
+Effet : 122 → 111 (TS7006 83→57).
+
+### Cible réelle : `vue-tsc --noEmit` = **6** (TS2589=3 + TS2322=3), PAS 10.
+(Le TS2589=7 de golar et le set exact divergent encore ; à converger.)
+
+### CASCADE restante (≈111 → 6) — convergence codegen type Volar 2.2, PAS le checker
+Chaque fix « démasque » la couche suivante (les expr. auparavant `any` se typent) :
+- **TS7006 `(v)` ×47** : param d'une **prop fonction** (`:on-save="(v)=>…"` sur
+  `InlineEditCell`, `withDefaults`). `__VLS_Props` est bien défini maintenant, mais
+  le typage contextuel du param à travers l'objet-props généré `new __VLS_X({...})`
+  dégrade encore → prochaine investigation.
+- **TS18048 ×12** (`__VLS_ctx.height possibly undefined`) : les props avec défaut
+  (`withDefaults`) ne sont pas rendues non-optionnelles dans le ctx du composant ;
+  le `__defaults`/`__VLS_defaults` doit retirer `| undefined` (modèle Volar).
+- **TS7053 ×26** : accès index-signature (slots UTable `#cell`), pattern distinct.
+- Démasqués par les fixes : TS2769×2, TS2345×1, TS2538×1, TS2322 +1 — à trier
+  (réels app vs faux positifs codegen) contre vue-tsc.
+Outillage : `helperFS`, `resolveVueDir`, byte-match `volar_comparison` VERT,
+`go test ./internal/checker/...` VERT, `go test ./internal/vue/tests/...` = mêmes
+échecs env `node_modules` que la base (non liés).
