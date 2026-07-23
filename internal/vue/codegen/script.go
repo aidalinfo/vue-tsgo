@@ -115,22 +115,30 @@ func generateScript(base *codegenCtx, scriptSetupEl *vue_ast.ElementNode, script
 			}
 		}
 
+		// Emit script setup content inline (no IIFE wrapper)
+		innerStart := c.scriptSetupEl.InnerLoc.Pos()
+
 		// Generic SFC: wrap the entire setup + template body in a generic arrow
 		// function so the `generic="T extends ..."` type parameters are in scope
 		// throughout (props type, ctx, template). Matches Volar's codegen; the
 		// matching close + export is emitted at the "Export" section below.
+		// (Import hoisting above the wrapper is a byte-match refinement handled
+		// separately; imports stay inline here — a pre-existing generic-SFC
+		// limitation, TS1232/TS2307 on generic wrappers.)
 		if hasGeneric {
+			c.serviceText.WriteString("/* placeholder */\n")
 			c.serviceText.WriteString("const __VLS_export = (<")
 			c.serviceText.WriteString(genericText)
 			c.serviceText.WriteString(",>(\n")
 			c.serviceText.WriteString("\t__VLS_props: NonNullable<Awaited<typeof __VLS_setup>>['props'],\n")
 			c.serviceText.WriteString("\t__VLS_ctx?: __VLS_PrettifyLocal<Pick<NonNullable<Awaited<typeof __VLS_setup>>, 'attrs' | 'emit' | 'slots'>>,\n")
-			c.serviceText.WriteString("\t__VLS_exposed?: NonNullable<Awaited<typeof __VLS_setup>>['expose'],\n")
+			c.serviceText.WriteString("\t__VLS_expose?: NonNullable<Awaited<typeof __VLS_setup>>['expose'],\n")
 			c.serviceText.WriteString("\t__VLS_setup = (async () => {\n")
+		} else {
+			// Volar emits a `/* placeholder */` marker at the very start of the
+			// script setup body (before the mapped source content).
+			c.serviceText.WriteString("/* placeholder */")
 		}
-
-		// Emit script setup content inline (no IIFE wrapper)
-		innerStart := c.scriptSetupEl.InnerLoc.Pos()
 
 		var hasText bool
 		if len(c.scriptSetupEl.Children) == 1 {
@@ -293,6 +301,9 @@ func generateScript(base *codegenCtx, scriptSetupEl *vue_ast.ElementNode, script
 						break
 					}
 					propsVariableName = "__VLS_Props"
+					// Expose the props on the ctx instance: __VLS_PublicProps = typeof
+					// __VLS_Props → __typeProps wires them so `__VLS_ctx.<prop>` resolves.
+					propsTypeName = "typeof __VLS_Props"
 					c.mapText(c.lastMappedPos, innerStart+statement.Pos())
 					c.serviceText.WriteString("\nconst __VLS_Props = ")
 					c.mapText(innerStart+statement.Pos(), innerStart+statement.End())
@@ -354,12 +365,21 @@ func generateScript(base *codegenCtx, scriptSetupEl *vue_ast.ElementNode, script
 			}
 		}
 
-		// For Volar-style type extraction: transform defineProps<{...}>() into type + call
-		c.emitScriptSetupContent(innerStart, hasText, importRanges, propsTypeName, emitsTypeName)
+		// For Volar-style type extraction: transform defineProps<{...}>() into type + call.
+		c.emitScriptSetupContent(innerStart, hasText, importRanges, propsTypeName, emitsTypeName, false)
+
+		// Volar closes the script setup body with a `debugger/* PartiallyEnd */` marker.
+		if !hasGeneric {
+			c.serviceText.WriteString("debugger/* PartiallyEnd: #3632/scriptSetup.vue */\n")
+		}
 
 		// Populate setupBindings for template codegen to distinguish imported vs global components
 		for _, name := range c.bindingNames {
 			c.codegenCtx.setupBindings.Add(name)
+		}
+		// The defineProps result var is accessed bare in the template (Volar model).
+		if propsVariableName != "" {
+			c.codegenCtx.noCtxPrefix.Add(propsVariableName)
 		}
 
 		// Generate template first (buffered) to collect used vars for binding filtering
@@ -391,12 +411,11 @@ func generateScript(base *codegenCtx, scriptSetupEl *vue_ast.ElementNode, script
 		// Emit consolidated model types (Volar-style: __VLS_ModelProps, __VLS_ModelEmit, __VLS_modelEmit)
 		c.emitModelTypes()
 
-		// PublicProps type (before SetupExposed, to match Volar order for medium-complex)
-		// Only emit for type-only props or defineModel, NOT for runtime props (pitfall #19)
-		hasPublicProps := false
-		if propsTypeName != "" || len(c.defineModels) > 0 {
-			hasPublicProps = true
-			c.serviceText.WriteString("type __VLS_PublicProps = ")
+		// __VLS_PublicProps — Volar always emits this: the type-only props/models
+		// intersection, or `{}` when there are none (runtime props go via `props:`).
+		hasPublicProps := propsTypeName != "" || len(c.defineModels) > 0
+		c.serviceText.WriteString("type __VLS_PublicProps = ")
+		if hasPublicProps {
 			parts := []string{}
 			if propsTypeName != "" {
 				parts = append(parts, propsTypeName)
@@ -410,143 +429,23 @@ func generateScript(base *codegenCtx, scriptSetupEl *vue_ast.ElementNode, script
 				}
 				c.serviceText.WriteString(p)
 			}
-			c.serviceText.WriteString(";\n")
-		}
-
-		// SetupExposed type — only include bindings that are actually used in the template
-		// (Volar computes this as the intersection of script bindings and template accesses)
-		// When empty, Volar omits __VLS_SetupExposed entirely and uses {} for LocalComponents/Directives.
-		var emittedBindings collections.Set[string]
-		var bindingSet collections.Set[string]
-		for _, name := range c.bindingNames {
-			bindingSet.Add(name)
-		}
-		// Collect exposed bindings in template access order
-		var exposedBindings []string
-		for _, v := range tmplOutput.allAccessedVars {
-			if emittedBindings.Has(v) || !bindingSet.Has(v) {
-				continue
-			}
-			emittedBindings.Add(v)
-			exposedBindings = append(exposedBindings, v)
-		}
-		hasSetupExposed := len(exposedBindings) > 0
-		if hasSetupExposed {
-			c.serviceText.WriteString("type __VLS_SetupExposed = import('vue').ShallowUnwrapRef<{\n")
-			for _, v := range exposedBindings {
-				c.serviceText.WriteString(v)
-				c.serviceText.WriteString(": typeof ")
-				c.serviceText.WriteString(v)
-				c.serviceText.WriteString(";\n")
-			}
-			c.serviceText.WriteString("}>;\n")
-		}
-
-		// EmitProps type — define when there are emits (defineEmits or defineModel).
-		// Volar uses "typeof __VLS_modelEmit" for model emits and "typeof emitsVar" for defineEmits.
-		hasPublicEmits := false
-		if emitsVariableName != "" || len(c.defineModels) > 0 {
-			hasPublicEmits = true
-			// Build emit type parts
-			emitTypeParts := []string{}
-			if emitsVariableName != "" {
-				emitTypeParts = append(emitTypeParts, "typeof "+emitsVariableName)
-			}
-			if len(c.defineModels) > 0 {
-				emitTypeParts = append(emitTypeParts, "typeof __VLS_modelEmit")
-			}
-			// Only need __VLS_PublicEmits alias when there are both defineEmits and defineModel
-			if len(emitTypeParts) > 1 {
-				c.serviceText.WriteString("type __VLS_PublicEmits = ")
-				for i, p := range emitTypeParts {
-					if i > 0 {
-						c.serviceText.WriteString(" & ")
-					}
-					c.serviceText.WriteString(p)
-				}
-				c.serviceText.WriteString(";\n")
-			}
-			c.serviceText.WriteString("type __VLS_EmitProps = __VLS_EmitsToProps<__VLS_NormalizeEmits<")
-			if len(emitTypeParts) > 1 {
-				c.serviceText.WriteString("__VLS_PublicEmits")
-			} else {
-				c.serviceText.WriteString(emitTypeParts[0])
-			}
-			c.serviceText.WriteString(">>;\n")
-		}
-
-		// Context object
-		c.serviceText.WriteString("const __VLS_ctx = {\n")
-		if selfType != "" {
-			c.serviceText.WriteString("...{} as InstanceType<__VLS_PickNotAny<typeof ")
-			c.serviceText.WriteString(selfType)
-			c.serviceText.WriteString(" extends new () => {} ? typeof ")
-			c.serviceText.WriteString(selfType)
-			c.serviceText.WriteString(" : new () => {}, new () => {}>>,\n")
 		} else {
-			c.serviceText.WriteString("...{} as import('vue').ComponentPublicInstance,\n")
+			c.serviceText.WriteString("{}")
 		}
-		if hasPublicEmits {
-			// Volar uses "typeof emitsVar" for defineEmits, "typeof __VLS_modelEmit" for defineModel
-			c.serviceText.WriteString("...{} as { $emit: ")
-			emitRef := c.emitTypeRef(emitsVariableName)
-			c.serviceText.WriteString(emitRef)
-			c.serviceText.WriteString(" },\n")
-		}
-		// Emit $props spread for any props (runtime or type-only) or models
-		if propsVariableName != "" || len(c.defineModels) > 0 {
-			writeCtxPropsType := func() {
-				if propsVariableName != "" {
-					c.serviceText.WriteString("typeof ")
-					c.serviceText.WriteString(propsVariableName)
-				}
-				if len(c.defineModels) > 0 {
-					if propsVariableName != "" {
-						c.serviceText.WriteString(" & ")
-					}
-					c.serviceText.WriteString("__VLS_ModelProps")
-				}
-				if hasPublicEmits {
-					c.serviceText.WriteString(" & __VLS_EmitProps")
-				}
-			}
-			c.serviceText.WriteString("...{} as { $props: ")
-			writeCtxPropsType()
-			c.serviceText.WriteString(" },\n")
-			c.serviceText.WriteString("...{} as ")
-			writeCtxPropsType()
-			c.serviceText.WriteString(",\n")
-		}
-		if hasSetupExposed {
-			c.serviceText.WriteString("...{} as __VLS_SetupExposed,\n")
-		}
-		// <style module> bindings ($style / named) so the template can use `css.foo`
-		if cssType := c.cssModulesObjectType(); cssType != "" {
-			c.serviceText.WriteString("...{} as ")
-			c.serviceText.WriteString(cssType)
-			c.serviceText.WriteString(",\n")
-		}
-		c.serviceText.WriteString("};\n")
+		c.serviceText.WriteString(";\n")
 
-		// Component and directive type declarations
-		if hasSetupExposed {
-			c.serviceText.WriteString("type __VLS_LocalComponents = __VLS_SetupExposed;\n")
-		} else {
-			c.serviceText.WriteString("type __VLS_LocalComponents = {};\n")
-		}
-		c.serviceText.WriteString("type __VLS_GlobalComponents = import('vue').GlobalComponents;\n")
+		hasPublicEmits := emitsVariableName != "" || len(c.defineModels) > 0
+
+		// Volar 2.2.x context model: __VLS_ctx = InstanceType of the self component
+		// (defined below), whose setup() returns all script-setup bindings and whose
+		// props/emits are wired via __typeProps/__typeEmits. Local components and
+		// directives are derived from ctx. $slots/$attrs/$refs/$el live on the
+		// separate __VLS_dollars var (emitted with the template body).
+		c.serviceText.WriteString("const __VLS_ctx = {} as InstanceType<__VLS_PickNotAny<typeof __VLS_self, new () => {}>>;\n")
+		c.serviceText.WriteString("type __VLS_LocalComponents = & typeof __VLS_ctx;\n")
 		c.serviceText.WriteString("let __VLS_components!: __VLS_LocalComponents & __VLS_GlobalComponents;\n")
-		if c.options.Version.hasJsxRuntimeTypes() {
-			c.serviceText.WriteString("let __VLS_intrinsics!: import('vue/jsx-runtime').JSX.IntrinsicElements;\n")
-		} else {
-			c.serviceText.WriteString("let __VLS_intrinsics!: globalThis.JSX.IntrinsicElements;\n")
-		}
-		if hasSetupExposed {
-			c.serviceText.WriteString("type __VLS_LocalDirectives = __VLS_SetupExposed;\n")
-		} else {
-			c.serviceText.WriteString("type __VLS_LocalDirectives = {};\n")
-		}
-		c.serviceText.WriteString("let __VLS_directives!: __VLS_LocalDirectives & import('vue').GlobalDirectives;\n")
+		c.serviceText.WriteString("type __VLS_LocalDirectives = & typeof __VLS_ctx;\n")
+		c.serviceText.WriteString("let __VLS_directives!: __VLS_LocalDirectives & __VLS_GlobalDirectives;\n")
 
 		// __VLS_StyleScopedClasses type (only when <style scoped> present)
 		if c.hasScopedStyle && len(c.cssClasses) > 0 {
@@ -558,21 +457,43 @@ func generateScript(base *codegenCtx, scriptSetupEl *vue_ast.ElementNode, script
 			}
 		}
 
-		// Merge buffered template output
+		// Merge buffered template output (element/component factories, interpolations,
+		// then the __VLS_Slots/InheritedAttrs/TemplateRefs/RootEl/__VLS_dollars block).
 		c.mergeTemplateOutput(tmplOutput)
 
-		// Used template vars (top-level remaining after inner scope drains)
-		c.serviceText.WriteString("// @ts-ignore\n[")
-		for _, v := range c.usedTemplateVars {
-			c.serviceText.WriteString(v)
-			c.serviceText.WriteString(",")
+		// Export — compute the setup() return bindings (shared by generic & normal).
+		// Only the defineProps result var is kept out of setup()'s return (Volar wires
+		// props via __typeProps and accesses `props` bare). defineEmits / defineModel
+		// result vars ARE returned when the template accesses them. setup() returns
+		// only bindings actually accessed in the template (via __VLS_ctx.<name>), in
+		// declaration order — imports used only in script (e.g. `ref`) are excluded.
+		var macroLocals collections.Set[string]
+		if propsVariableName != "" {
+			macroLocals.Add(propsVariableName)
 		}
-		c.serviceText.WriteString("];\n")
+		var accessedSet collections.Set[string]
+		for _, v := range tmplOutput.allAccessedVars {
+			accessedSet.Add(v)
+		}
+		var setupBindings []string
+		for _, b := range dedupeStrings(c.bindingNames) {
+			if macroLocals.Has(b) || !accessedSet.Has(b) {
+				continue
+			}
+			setupBindings = append(setupBindings, b)
+		}
+		emitOptions := func() {
+			c.emitSelfComponentOptions(innerStart, hasPublicProps, hasPublicEmits, propsRuntimeArg, emitsRuntimeArg, emitsVariableName, propsTypeName, emitsTypeName, defaultsArg)
+		}
 
-		// Export
 		if hasGeneric {
-			// Close the generic setup wrapper opened above: return the component's
-			// props/expose/attrs/slots/emit shape, then export the generic factory.
+			// __VLS_self is referenced by __VLS_ctx above; emit it, then close the
+			// generic wrapper returning REAL slots (__VLS_Slots) and emit so consumers
+			// of the generic component type its slots/events (kills the false positives).
+			c.serviceText.WriteString("const __VLS_self = (await import('vue')).defineComponent({\n")
+			c.emitSetupReturn(setupBindings)
+			emitOptions()
+			c.serviceText.WriteString("});\n")
 			c.serviceText.WriteString("return {} as {\n")
 			c.serviceText.WriteString("\tprops: import('vue').PublicProps")
 			if hasPublicProps {
@@ -581,136 +502,50 @@ func generateScript(base *codegenCtx, scriptSetupEl *vue_ast.ElementNode, script
 			c.serviceText.WriteString(" & (typeof globalThis extends { __VLS_PROPS_FALLBACK: infer P } ? P : {});\n")
 			c.serviceText.WriteString("\texpose: (exposed: {}) => void;\n")
 			c.serviceText.WriteString("\tattrs: any;\n")
-			c.serviceText.WriteString("\tslots: {};\n")
-			c.serviceText.WriteString("\temit: {};\n")
+			c.serviceText.WriteString("\tslots: __VLS_Slots;\n")
+			if hasPublicEmits {
+				c.serviceText.WriteString("\temit: ")
+				c.serviceText.WriteString(c.emitTypeRef(emitsVariableName))
+				c.serviceText.WriteString(";\n")
+			} else {
+				c.serviceText.WriteString("\temit: {};\n")
+			}
 			c.serviceText.WriteString("};\n")
 			c.serviceText.WriteString("})(),\n")
 			c.serviceText.WriteString(") => ({} as import('vue').VNode & { __ctx?: Awaited<typeof __VLS_setup> }));\n")
 			c.serviceText.WriteString("export default {} as typeof __VLS_export;\n")
 			c.serviceText.WriteString("type __VLS_PrettifyLocal<T> = (T extends any ? { [K in keyof T]: T[K]; } : { [K in keyof T as K]: T[K]; }) & {};\n")
 		} else {
-			hasSlots := slotsVariableName != "" || c.templateHasSlots
-			hasDefineComponentOptions := hasPublicProps || propsRuntimeArg != nil || hasPublicEmits || hasExpose
+			// Volar 2.2.x model: __VLS_self carries props/emits (so
+			// InstanceType<__VLS_self> exposes $props/$emit) and its setup() returns
+			// the accessed bindings; the default export is a bare defineComponent
+			// (wrapped in __VLS_WithSlots when the component exposes slots).
+			exposesSlots := slotsVariableName != "" || c.templateHasSlots
 
-			if !hasDefineComponentOptions && !hasSlots {
-				// Simple case: no props/emits/expose/slots
-				c.serviceText.WriteString("const __VLS_export = (await import('vue')).defineComponent({\n});\nexport default {} as typeof __VLS_export;\n\n")
-			} else if hasSlots {
-				// With slots: use __VLS_base intermediate
-				c.serviceText.WriteString("const __VLS_base = (await import('vue')).defineComponent({\n")
-				if hasPublicEmits {
-					// Per Volar: emit runtime emits if available, type-only emits otherwise
-					hasRuntimeEmits := emitsRuntimeArg != nil
-					hasTypeEmits := emitsTypeName != "" || len(c.defineModels) > 0
+			c.serviceText.WriteString("const __VLS_self = (await import('vue')).defineComponent({\n")
+			c.emitSetupReturn(setupBindings)
+			emitOptions()
+			c.serviceText.WriteString("});\n")
 
-					emitType := c.emitTypeForExport(emitsVariableName, emitsTypeName)
-					if c.options.Version.supportsTypeEmits() && hasTypeEmits {
-						c.serviceText.WriteString("__typeEmits: {} as ")
-						c.serviceText.WriteString(emitType)
-						c.serviceText.WriteString(",\n")
-					}
-					if hasRuntimeEmits {
-						c.serviceText.WriteString("emits: ")
-						// Emit the runtime emits array/object directly from source
-						c.mapTextFrom(emitsRuntimeArg, c.scriptSetupEl.Ast, innerStart)
-						c.serviceText.WriteString(",\n")
-					} else if !c.options.Version.supportsTypeEmits() || !hasTypeEmits {
-						// Fallback for old Vue or when we only have type-only emits
-						c.serviceText.WriteString("emits: {} as unknown as __VLS_NormalizeEmits<")
-						c.serviceText.WriteString(emitType)
-						c.serviceText.WriteString(">,\n")
-					}
-				}
-				if hasPublicProps || propsRuntimeArg != nil {
-					// Per Volar: runtime props take precedence
-					// When defineProps has runtime arg, Volar sets typeOptionGenerates.length = 0
-					// So: runtime props → NO __typeProps, only props: {...}
-					hasRuntimeProps := propsRuntimeArg != nil
-					hasTypeProps := propsTypeName != "" || len(c.defineModels) > 0
-
-					if hasRuntimeProps {
-						// Runtime props: emit props: {...}, NO __typeProps
-						c.serviceText.WriteString("props: ")
-						// Emit the runtime props object directly from source
-						c.mapTextFrom(propsRuntimeArg, c.scriptSetupEl.Ast, innerStart)
-						c.serviceText.WriteString(",\n")
-					} else if hasTypeProps {
-						// withDefaults(): wire the defaults object (before __typeProps, per Volar).
-						if defaultsArg != nil {
-							c.serviceText.WriteString("__defaults: __VLS_defaults,\n")
-						}
-						// Type-only props (no runtime): emit __typeProps for Vue 3.5+
-						if c.options.Version.supportsTypeProps() {
-							c.serviceText.WriteString("__typeProps: {} as __VLS_PublicProps,\n")
-						} else {
-							c.serviceText.WriteString("props: {} as unknown as __VLS_TypePropsToOption<__VLS_PublicProps>,\n")
-						}
-					}
-				}
-				if hasExpose {
-					c.serviceText.WriteString("setup: () => (__VLS_exposed),\n")
-				}
-				c.serviceText.WriteString("});\n")
-				c.serviceText.WriteString("const __VLS_export = {} as __VLS_WithSlots<typeof __VLS_base, __VLS_Slots>;\n")
-				c.serviceText.WriteString("export default {} as typeof __VLS_export;\n")
-				c.serviceText.WriteString("type __VLS_WithSlots<T, S> = T & {\n\tnew(): {\n\t\t$slots: S;\n\t}\n};\n\n")
+			if exposesSlots {
+				c.serviceText.WriteString("const __VLS_component = (await import('vue')).defineComponent({\n")
 			} else {
-				// Without slots: directly assign to __VLS_export
-				c.serviceText.WriteString("const __VLS_export = (await import('vue')).defineComponent({\n")
-				if hasPublicEmits {
-					// Per Volar: emit runtime emits if available, type-only emits otherwise
-					hasRuntimeEmits := emitsRuntimeArg != nil
-					hasTypeEmits := emitsTypeName != "" || len(c.defineModels) > 0
+				c.serviceText.WriteString("export default (await import('vue')).defineComponent({\n")
+			}
+			c.emitSetupReturn(nil)
+			emitOptions()
+			c.serviceText.WriteString("});\n")
 
-					emitType := c.emitTypeForExport(emitsVariableName, emitsTypeName)
-					if c.options.Version.supportsTypeEmits() && hasTypeEmits {
-						c.serviceText.WriteString("__typeEmits: {} as ")
-						c.serviceText.WriteString(emitType)
-						c.serviceText.WriteString(",\n")
-					}
-					if hasRuntimeEmits {
-						c.serviceText.WriteString("emits: ")
-						// Emit the runtime emits array/object directly from source
-						c.mapTextFrom(emitsRuntimeArg, c.scriptSetupEl.Ast, innerStart)
-						c.serviceText.WriteString(",\n")
-					} else if !c.options.Version.supportsTypeEmits() || !hasTypeEmits {
-						// Fallback for old Vue or when we only have type-only emits
-						c.serviceText.WriteString("emits: {} as unknown as __VLS_NormalizeEmits<")
-						c.serviceText.WriteString(emitType)
-						c.serviceText.WriteString(">,\n")
-					}
-				}
-				if hasPublicProps || propsRuntimeArg != nil {
-					// Per Volar: runtime props take precedence
-					// When defineProps has runtime arg, Volar sets typeOptionGenerates.length = 0
-					// So: runtime props → NO __typeProps, only props: {...}
-					hasRuntimeProps := propsRuntimeArg != nil
-					hasTypeProps := propsTypeName != "" || len(c.defineModels) > 0
-
-					if hasRuntimeProps {
-						// Runtime props: emit props: {...}, NO __typeProps
-						c.serviceText.WriteString("props: ")
-						// Emit the runtime props object directly from source
-						c.mapTextFrom(propsRuntimeArg, c.scriptSetupEl.Ast, innerStart)
-						c.serviceText.WriteString(",\n")
-					} else if hasTypeProps {
-						// withDefaults(): wire the defaults object (before __typeProps, per Volar).
-						if defaultsArg != nil {
-							c.serviceText.WriteString("__defaults: __VLS_defaults,\n")
-						}
-						// Type-only props (no runtime): emit __typeProps for Vue 3.5+
-						if c.options.Version.supportsTypeProps() {
-							c.serviceText.WriteString("__typeProps: {} as __VLS_PublicProps,\n")
-						} else {
-							c.serviceText.WriteString("props: {} as unknown as __VLS_TypePropsToOption<__VLS_PublicProps>,\n")
-						}
-					}
-				}
-				if hasExpose {
-					c.serviceText.WriteString("setup: () => (__VLS_exposed),\n")
-				}
-				c.serviceText.WriteString("});\n")
-				c.serviceText.WriteString("export default {} as typeof __VLS_export;\n\n")
+			if exposesSlots {
+				c.serviceText.WriteString("export default {} as __VLS_WithSlots<typeof __VLS_component, __VLS_Slots>;\n")
+			}
+			c.serviceText.WriteString(";/* PartiallyEnd: #4569/main.vue */\n")
+			if exposesSlots {
+				c.serviceText.WriteString("type __VLS_WithSlots<T, S> = T & {\n\tnew(): {\n\t\t$slots: S;\n\t\t\n\t}\n};\n")
+			}
+			if hasPublicProps {
+				c.serviceText.WriteString("type __VLS_NonUndefinedable<T> = T extends undefined ? never : T;\n")
+				c.serviceText.WriteString("type __VLS_TypePropsToOption<T> = {\n\t[K in keyof T]-?: {} extends Pick<T, K>\n\t\t? { type: import('vue').PropType<__VLS_NonUndefinedable<T[K]>> }\n\t\t: { type: import('vue').PropType<T[K]>, required: true }\n};\n")
 			}
 		}
 
@@ -769,7 +604,82 @@ func generateScript(base *codegenCtx, scriptSetupEl *vue_ast.ElementNode, script
 
 // emitScriptSetupContent emits the script setup content inline, handling import hoisting
 // and Volar-style defineProps/defineEmits type extraction.
-func (c *scriptCodegenCtx) emitScriptSetupContent(innerStart int, hasText bool, importRanges []core.TextRange, propsTypeName, emitsTypeName string) {
+// dedupeStrings returns the input slice with duplicates removed, preserving first-seen order.
+func dedupeStrings(in []string) []string {
+	var seen collections.Set[string]
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if seen.Has(s) {
+			continue
+		}
+		seen.Add(s)
+		out = append(out, s)
+	}
+	return out
+}
+
+// emitSetupReturn emits a `setup() { return { <bindings> }; },` block for a
+// defineComponent, each binding as `name: name as typeof name`.
+func (c *scriptCodegenCtx) emitSetupReturn(bindings []string) {
+	c.serviceText.WriteString("setup() {\n")
+	c.serviceText.WriteString("return {\n")
+	for _, b := range bindings {
+		c.serviceText.WriteString(b)
+		c.serviceText.WriteString(": ")
+		c.serviceText.WriteString(b)
+		c.serviceText.WriteString(" as typeof ")
+		c.serviceText.WriteString(b)
+		c.serviceText.WriteString(",\n")
+	}
+	c.serviceText.WriteString("};\n")
+	c.serviceText.WriteString("},\n")
+}
+
+// emitSelfComponentOptions emits the __typeProps/__typeEmits/props/emits options for
+// the __VLS_self defineComponent, following Volar's runtime-vs-type-only rules.
+func (c *scriptCodegenCtx) emitSelfComponentOptions(innerStart int, hasPublicProps, hasPublicEmits bool, propsRuntimeArg, emitsRuntimeArg *ast.Node, emitsVariableName, propsTypeName, emitsTypeName string, defaultsArg *ast.Node) {
+	if hasPublicEmits {
+		hasRuntimeEmits := emitsRuntimeArg != nil
+		hasTypeEmits := emitsTypeName != "" || len(c.defineModels) > 0
+
+		emitType := c.emitTypeForExport(emitsVariableName, emitsTypeName)
+		if c.options.Version.supportsTypeEmits() && hasTypeEmits {
+			c.serviceText.WriteString("__typeEmits: {} as ")
+			c.serviceText.WriteString(emitType)
+			c.serviceText.WriteString(",\n")
+		}
+		if hasRuntimeEmits {
+			c.serviceText.WriteString("emits: ")
+			c.mapTextFrom(emitsRuntimeArg, c.scriptSetupEl.Ast, innerStart)
+			c.serviceText.WriteString(",\n")
+		} else if !c.options.Version.supportsTypeEmits() || !hasTypeEmits {
+			c.serviceText.WriteString("emits: {} as unknown as __VLS_NormalizeEmits<")
+			c.serviceText.WriteString(emitType)
+			c.serviceText.WriteString(">,\n")
+		}
+	}
+	if hasPublicProps || propsRuntimeArg != nil {
+		hasRuntimeProps := propsRuntimeArg != nil
+		hasTypeProps := propsTypeName != "" || len(c.defineModels) > 0
+
+		if hasRuntimeProps {
+			c.serviceText.WriteString("props: ")
+			c.mapTextFrom(propsRuntimeArg, c.scriptSetupEl.Ast, innerStart)
+			c.serviceText.WriteString(",\n")
+		} else if hasTypeProps {
+			if defaultsArg != nil {
+				c.serviceText.WriteString("__defaults: __VLS_defaults,\n")
+			}
+			if c.options.Version.supportsTypeProps() {
+				c.serviceText.WriteString("__typeProps: {} as __VLS_PublicProps,\n")
+			} else {
+				c.serviceText.WriteString("props: {} as unknown as __VLS_TypePropsToOption<__VLS_PublicProps>,\n")
+			}
+		}
+	}
+}
+
+func (c *scriptCodegenCtx) emitScriptSetupContent(innerStart int, hasText bool, importRanges []core.TextRange, propsTypeName, emitsTypeName string, skipImports bool) {
 	if !hasText {
 		return
 	}
@@ -781,14 +691,16 @@ func (c *scriptCodegenCtx) emitScriptSetupContent(innerStart int, hasText bool, 
 	// const props = defineProps<{...}>() → type __VLS_Props = {...};\nconst props = defineProps<__VLS_Props>()
 	// const emit = defineEmits<{...}>() → type __VLS_Emit = {...};\nconst emit = defineEmits<__VLS_Emit>()
 	if propsTypeName != "" || emitsTypeName != "" {
-		c.emitScriptSetupContentWithTypeExtraction(innerStart, sourceContent, text, importRanges, propsTypeName, emitsTypeName)
+		c.emitScriptSetupContentWithTypeExtraction(innerStart, sourceContent, text, importRanges, propsTypeName, emitsTypeName, skipImports)
 	} else {
-		c.emitScriptSetupContentDirect(innerStart, sourceContent, text, importRanges)
+		c.emitScriptSetupContentDirect(innerStart, sourceContent, text, importRanges, skipImports)
 	}
 }
 
 // emitScriptSetupContentDirect emits script setup content without type extraction transforms.
-func (c *scriptCodegenCtx) emitScriptSetupContentDirect(innerStart int, sourceContent string, text *vue_ast.TextNode, importRanges []core.TextRange) {
+// When skipImports is set (generic SFCs), import statements are omitted here — they were
+// hoisted above the generic wrapper.
+func (c *scriptCodegenCtx) emitScriptSetupContentDirect(innerStart int, sourceContent string, text *vue_ast.TextNode, importRanges []core.TextRange, skipImports bool) {
 	// Start from lastMappedPos to avoid re-emitting text already handled by the first pass
 	// (e.g. defineProps/defineEmits/defineModel/defineExpose expression statements)
 	pos := c.lastMappedPos
@@ -801,8 +713,10 @@ func (c *scriptCodegenCtx) emitScriptSetupContentDirect(innerStart int, sourceCo
 		if pos < imp.Pos() {
 			c.mapText(pos, imp.Pos())
 		}
-		// Emit the import inline (Volar keeps imports inline in the output)
-		c.mapText(imp.Pos(), imp.End())
+		// Emit the import inline (Volar keeps imports inline) unless hoisted (generic).
+		if !skipImports {
+			c.mapText(imp.Pos(), imp.End())
+		}
 		pos = imp.End()
 	}
 	// Emit remaining content
@@ -812,7 +726,7 @@ func (c *scriptCodegenCtx) emitScriptSetupContentDirect(innerStart int, sourceCo
 }
 
 // emitScriptSetupContentWithTypeExtraction handles Volar-style type extraction from defineProps/defineEmits.
-func (c *scriptCodegenCtx) emitScriptSetupContentWithTypeExtraction(innerStart int, sourceContent string, text *vue_ast.TextNode, importRanges []core.TextRange, propsTypeName, emitsTypeName string) {
+func (c *scriptCodegenCtx) emitScriptSetupContentWithTypeExtraction(innerStart int, sourceContent string, text *vue_ast.TextNode, importRanges []core.TextRange, propsTypeName, emitsTypeName string, skipImports bool) {
 	// Start from lastMappedPos to avoid re-emitting text already handled by the first pass
 	// (e.g. defineProps/defineEmits/defineModel/defineExpose expression statements)
 	pos := c.lastMappedPos
@@ -825,6 +739,18 @@ func (c *scriptCodegenCtx) emitScriptSetupContentWithTypeExtraction(innerStart i
 	for _, statement := range statements {
 		stmtStart := innerStart + statement.Pos()
 		stmtEnd := innerStart + statement.End()
+
+		// Generic SFC: imports were hoisted above the wrapper — emit the gap before
+		// the import but omit the import statement itself.
+		if skipImports && statement.Kind == ast.KindImportDeclaration {
+			if pos < stmtStart {
+				c.mapText(pos, stmtStart)
+			}
+			if stmtEnd > pos {
+				pos = stmtEnd
+			}
+			continue
+		}
 
 		// Skip statements already emitted by the first pass
 		if stmtEnd <= pos {

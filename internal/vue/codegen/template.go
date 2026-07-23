@@ -113,31 +113,51 @@ func generateTemplate(base *codegenCtx, el *vue_ast.ElementNode) {
 			c.blockConditions = c.blockConditions[:c.blockConditionsChainSaveLen]
 		}
 	}
-	// Collect slot props for type generation
+	// Deferred scoped-class assertions (Volar emits these at the end of the template
+	// body, after component ctx vars and before the __VLS_Slots block).
+	for _, className := range c.scopedClasses {
+		c.serviceText.WriteString("/** @type {__VLS_StyleScopedClasses['")
+		c.serviceText.WriteString(className)
+		c.serviceText.WriteString("']} */;\n")
+	}
+	// Volar 2.2.x always emits __VLS_Slots, __VLS_InheritedAttrs, __VLS_TemplateRefs,
+	// __VLS_RootEl and __VLS_dollars at the end of the template body (even when empty).
+	// Slots
 	if len(c.slotProps) > 0 {
 		c.templateHasSlots = true
 		c.generateSlotTypes()
+	} else {
+		c.serviceText.WriteString("type __VLS_Slots = {};\n")
 	}
-	// Emit __VLS_TemplateRefs type (between Slots and RootEl to match Volar order)
-	if len(c.templateRefs) > 0 {
-		c.serviceText.WriteString("type __VLS_TemplateRefs = {}\n")
-		for _, ref := range c.templateRefs {
-			c.serviceText.WriteString("& { ")
-			c.serviceText.WriteString(ref.name)
-			c.serviceText.WriteString(": __VLS_Elements['")
-			c.serviceText.WriteString(ref.elemTag)
-			c.serviceText.WriteString("'] };\n")
-		}
+	// InheritedAttrs (golar has no fallthrough-attrs inference yet → always {})
+	c.serviceText.WriteString("type __VLS_InheritedAttrs = {};\n")
+	// TemplateRefs — single object literal: `{ <name>: __VLS_NativeElements['tag'], }`.
+	c.serviceText.WriteString("type __VLS_TemplateRefs = {\n")
+	for _, ref := range c.templateRefs {
+		c.serviceText.WriteString(ref.name)
+		c.serviceText.WriteString(": __VLS_NativeElements['")
+		c.serviceText.WriteString(ref.elemTag)
+		c.serviceText.WriteString("'],\n")
 	}
-	// Emit __VLS_RootEl type only for single-root components (Volar skips when multiple root children)
+	c.serviceText.WriteString("};\n")
+	// RootEl — single root: union of the root element tag(s); otherwise any.
 	if len(c.rootElementTags) > 0 && c.rootChildCount == 1 {
 		c.serviceText.WriteString("type __VLS_RootEl = \n")
 		for _, tag := range c.rootElementTags {
-			c.serviceText.WriteString("| __VLS_Elements['")
+			c.serviceText.WriteString("| __VLS_NativeElements['")
 			c.serviceText.WriteString(tag)
 			c.serviceText.WriteString("'];\n")
 		}
+	} else {
+		c.serviceText.WriteString("type __VLS_RootEl = any;\n")
 	}
+	// $slots/$attrs/$refs/$el isolated on __VLS_dollars; CPI→unknown ONLY here.
+	c.serviceText.WriteString("var __VLS_dollars!: {\n")
+	c.serviceText.WriteString("$slots: __VLS_Slots;\n")
+	c.serviceText.WriteString("$attrs: import('vue').ComponentPublicInstance['$attrs'] & Partial<__VLS_InheritedAttrs>;\n")
+	c.serviceText.WriteString("$refs: __VLS_TemplateRefs;\n")
+	c.serviceText.WriteString("$el: __VLS_RootEl;\n")
+	c.serviceText.WriteString("} & { [K in keyof import('vue').ComponentPublicInstance]: unknown };\n")
 	// Collect remaining used vars from top-level scope (keys with count > 0)
 	for _, key := range c.accessMapKeys {
 		count := c.accessMapCounts[key]
@@ -184,27 +204,27 @@ func (c *templateCodegenCtx) pushUsedVarScope() {
 	c.usedVarScopeDepth++
 }
 
-// drainUsedVarScope drains all accumulated vars and emits the // @ts-ignore [var,...]; block.
-// Keys are emitted in their original insertion order, once per access since last drain.
+// drainUsedVarScope resets per-scope access counts. Volar 2.2.x accesses template
+// vars through __VLS_ctx.<name> directly and does NOT emit the legacy
+// `// @ts-ignore [var,...];` drain block, so this no longer emits anything — it only
+// keeps the scope-depth bookkeeping and clears counts (allAccessedVars, used to
+// filter the __VLS_self setup() return, is tracked separately in trackUsedVar).
 func (c *templateCodegenCtx) drainUsedVarScope() {
 	c.usedVarScopeDepth--
-	// Always emit the drain block (Volar emits even when empty)
-	c.serviceText.WriteString("// @ts-ignore\n[")
 	for _, key := range c.accessMapKeys {
-		count := c.accessMapCounts[key]
-		for range count {
-			c.serviceText.WriteString(key)
-			c.serviceText.WriteString(",")
-		}
-		c.accessMapCounts[key] = 0 // Reset count, but keep key in order
+		c.accessMapCounts[key] = 0
 	}
-	c.serviceText.WriteString("];\n")
 }
 
 func (c *templateCodegenCtx) shouldPrefixIdentifier(identifier *ast.Node) bool {
 	name := identifier.Text()
 
 	if jsGlobals.Has(name) {
+		return false
+	}
+
+	// defineProps result var (e.g. `props`) is accessed bare, not via __VLS_ctx.
+	if c.noCtxPrefix.Has(name) {
 		return false
 	}
 
@@ -396,7 +416,7 @@ func (c *templateCodegenCtx) visit(el *vue_ast.Node) {
 				c.serviceText.WriteString(",")
 				c.mapExpressionInBindingPosition(forDirective.Index)
 			}
-			c.serviceText.WriteString("] of __VLS_vFor((")
+			c.serviceText.WriteString("] of __VLS_getVForSourceType((")
 			c.mapExpressionInNonBindingPosition(forDirective.Source)
 			c.serviceText.WriteString(")!)) {\n")
 		}
@@ -421,7 +441,10 @@ func (c *templateCodegenCtx) visit(el *vue_ast.Node) {
 			(elem.Tag != "template" && elem.Tag != "component" && elem.Tag != "slot" && (isBuiltInComponent(elem.Tag) || !isNativeElement(elem.Tag)))
 		isTemplate := elem.Tag == "template"
 		var ctxVar string
-		var componentVar, functionalVar, vnodeVar, ctxVarName, propsVarName, emitsVar string
+		var componentVar, functionalVar, vnodeVar, ctxVarName, propsVarName, emitsVar, normEmitsVar string
+		// compRef is the component expression (componentVar for global/dynamic, the
+		// import name for imported); persisted for the deferred ctx-var declaration.
+		var compRef string
 		var hasEvents, componentHasChildren bool
 		_ = functionalVar // may be unused in some paths
 		if isNativeElement(elem.Tag) && !isTemplate {
@@ -431,9 +454,9 @@ func (c *templateCodegenCtx) visit(el *vue_ast.Node) {
 			}
 			// Track ref attributes for __VLS_TemplateRefs type
 			c.trackRefAttribute(elem)
-			c.serviceText.WriteString("__VLS_asFunctionalElement1(__VLS_intrinsics.")
+			c.serviceText.WriteString("__VLS_asFunctionalElement(__VLS_intrinsicElements.")
 			c.serviceText.WriteString(elem.Tag)
-			c.serviceText.WriteString(", __VLS_intrinsics.")
+			c.serviceText.WriteString(", __VLS_intrinsicElements.")
 			c.serviceText.WriteString(elem.Tag)
 			c.serviceText.WriteString(")({\n")
 			propsStart := c.serviceText.Len() - 2
@@ -442,89 +465,86 @@ func (c *templateCodegenCtx) visit(el *vue_ast.Node) {
 			c.serviceText.WriteString("});\n")
 			// Generate standalone v-model getter for default v-model (no argument)
 			c.generateVModelGetter(elem)
-			// Emit scoped CSS class assertion after element
-			c.emitScopedClassAssertion(elem)
+			// Ref marker: `/** @type {typeof __VLS_ctx.<ref>} */;` right after the element.
+			c.emitRefMarker(elem)
+			// Collect scoped CSS classes (assertions are emitted deferred, at the end).
+			c.collectScopedClasses(elem)
 			// TODO: is this valid?
 			tagStart := elem.Loc.Pos() + 1
 			c.mapRange(tagStart, tagStart+len(elem.Tag), propsStart, propsEnd)
 		} else if isComponent {
-			// Volar allocation order: componentVar, functionalVar, vnodeVar, ctxVar, propsVar, [slotVar]
-			componentVar = c.newInternalVariable()
-			functionalVar = c.newInternalVariable()
-			vnodeVar = c.newInternalVariable()
-			ctxVarName = c.newInternalVariable()
-			propsVarName = c.newInternalVariable()
-
-			if dynamicComponentExpr != nil {
-				// Dynamic component: const __VLS_0 = (expression);
-				c.serviceText.WriteString("const ")
-				c.serviceText.WriteString(componentVar)
-				c.serviceText.WriteString(" = (")
-				c.mapExpressionInNonBindingPosition(dynamicComponentExpr.Expression)
-				c.serviceText.WriteString(");\n")
-			} else {
-				// Static component: check if imported or global
-				tag := elem.Tag
-				camelized := camelizeStr(tag)
-				capitalized := capitalizeStr(camelized)
-
-				matchedConst := ""
+			// Volar 2.2.x: for a GLOBAL/DYNAMIC component a componentVar is declared;
+			// for an IMPORTED component the import name is used directly (no
+			// componentVar). functionalVar, vnodeVar and ctxVar are always allocated
+			// (ctxVar's index is reserved even when its `var` decl is skipped).
+			tag := elem.Tag
+			camelized := camelizeStr(tag)
+			capitalized := capitalizeStr(camelized)
+			matchedConst := ""
+			if dynamicComponentExpr == nil {
 				for _, name := range []string{capitalized, camelized, tag} {
 					if c.setupBindings.Has(name) {
 						matchedConst = name
 						break
 					}
 				}
+			}
+			isImported := dynamicComponentExpr == nil && matchedConst != ""
 
-				if matchedConst != "" {
-					// Imported component: const __VLS_0 = ComponentName;
-					c.serviceText.WriteString("const ")
-					c.serviceText.WriteString(componentVar)
-					c.serviceText.WriteString(" = ")
-					c.serviceText.WriteString(matchedConst)
-					c.serviceText.WriteString(";\n")
-				} else {
-					// Global component: let __VLS_0!: __VLS_WithComponent<...>['tag'];
-					c.serviceText.WriteString("let ")
-					c.serviceText.WriteString(componentVar)
-					c.serviceText.WriteString("!: __VLS_WithComponent<'")
-					c.serviceText.WriteString(tag)
-					c.serviceText.WriteString("', __VLS_LocalComponents, __VLS_GlobalComponents, void, '")
-					c.serviceText.WriteString(capitalized)
-					c.serviceText.WriteString("'")
-					if camelized != capitalized {
-						c.serviceText.WriteString(", '")
-						c.serviceText.WriteString(camelized)
-						c.serviceText.WriteString("'")
-					}
-					if tag != camelized && tag != capitalized {
-						c.serviceText.WriteString(", '")
-						c.serviceText.WriteString(tag)
-						c.serviceText.WriteString("'")
-					}
-					c.serviceText.WriteString(">['")
-					c.serviceText.WriteString(tag)
-					c.serviceText.WriteString("'];\n")
-					// Emit tag reference comment (Volar pattern)
-					c.serviceText.WriteString("/** @ts-ignore @type {typeof __VLS_components.")
-					c.serviceText.WriteString(tag)
-					if !elem.IsSelfClosing {
-						c.serviceText.WriteString(" | typeof __VLS_components.")
-						c.serviceText.WriteString(tag)
-					}
-					c.serviceText.WriteString("} */\n")
-					c.serviceText.WriteString(tag)
-					c.serviceText.WriteString(";\n")
-				}
+			// compRef: expression passed to __VLS_asFunctionalComponent + `new`.
+			// typeRef: `typeof …` used in the /** @type */ marker.
+			var typeRef string
+			if dynamicComponentExpr != nil {
+				componentVar = c.newInternalVariable()
+				c.serviceText.WriteString("const ")
+				c.serviceText.WriteString(componentVar)
+				c.serviceText.WriteString(" = (")
+				c.mapExpressionInNonBindingPosition(dynamicComponentExpr.Expression)
+				c.serviceText.WriteString(");\n")
+				compRef = componentVar
+				typeRef = "typeof " + componentVar
+			} else if isImported {
+				compRef = matchedConst
+				typeRef = "typeof " + matchedConst
+				// The imported component name is a used binding → returned by setup().
+				c.allAccessedVars = append(c.allAccessedVars, matchedConst)
+			} else {
+				// Global component: const __VLS_0 = ({} as __VLS_WithComponent<...>).Tag;
+				componentVar = c.newInternalVariable()
+				c.serviceText.WriteString("const ")
+				c.serviceText.WriteString(componentVar)
+				c.serviceText.WriteString(" = ({} as __VLS_WithComponent<'")
+				c.serviceText.WriteString(tag)
+				c.serviceText.WriteString("', __VLS_LocalComponents, void, '")
+				c.serviceText.WriteString(capitalized)
+				c.serviceText.WriteString("', '")
+				c.serviceText.WriteString(camelized)
+				c.serviceText.WriteString("', '")
+				c.serviceText.WriteString(tag)
+				c.serviceText.WriteString("'>).")
+				c.serviceText.WriteString(tag)
+				c.serviceText.WriteString(";\n")
+				compRef = componentVar
+				typeRef = "typeof __VLS_components." + tag
 			}
 
-			// Volar: // @ts-ignore\nconst __VLS_1 = __VLS_asFunctionalComponent1(__VLS_0, new __VLS_0({...}));
+			// /** @type {[typeRef, (typeRef,) ]} */; — 2 entries unless self-closing.
+			c.serviceText.WriteString("/** @type {[")
+			c.serviceText.WriteString(typeRef)
+			c.serviceText.WriteString(", ")
+			if !elem.IsSelfClosing {
+				c.serviceText.WriteString(typeRef)
+				c.serviceText.WriteString(", ")
+			}
+			c.serviceText.WriteString("]} */;\n")
+
+			functionalVar = c.newInternalVariable()
 			c.serviceText.WriteString("// @ts-ignore\nconst ")
 			c.serviceText.WriteString(functionalVar)
-			c.serviceText.WriteString(" = __VLS_asFunctionalComponent1(")
-			c.serviceText.WriteString(componentVar)
+			c.serviceText.WriteString(" = __VLS_asFunctionalComponent(")
+			c.serviceText.WriteString(compRef)
 			c.serviceText.WriteString(", new ")
-			c.serviceText.WriteString(componentVar)
+			c.serviceText.WriteString(compRef)
 			c.serviceText.WriteString("({\n")
 			// Skip used var tracking for constructor props (Volar generates propCodes once, yields twice)
 			c.skipUsedVarTracking = true
@@ -532,7 +552,7 @@ func (c *templateCodegenCtx) visit(el *vue_ast.Node) {
 			c.skipUsedVarTracking = false
 			c.serviceText.WriteString("}));\n")
 
-			// Volar: const __VLS_2 = __VLS_1({...}, ...__VLS_functionalComponentArgsRest(__VLS_1));
+			vnodeVar = c.newInternalVariable()
 			c.serviceText.WriteString("const ")
 			c.serviceText.WriteString(vnodeVar)
 			c.serviceText.WriteString(" = ")
@@ -547,6 +567,9 @@ func (c *templateCodegenCtx) visit(el *vue_ast.Node) {
 			tagStart := elem.Loc.Pos() + 1
 			c.mapRange(tagStart, tagStart+len(elem.Tag), propsStart, propsEnd)
 
+			// Reserve the ctx var index (declared deferred, after children).
+			ctxVarName = c.newInternalVariable()
+
 			// Process component events (Volar tuple format)
 			for _, prop := range elem.Props {
 				if prop.Kind != vue_ast.KindDirective {
@@ -560,43 +583,47 @@ func (c *templateCodegenCtx) visit(el *vue_ast.Node) {
 				}
 				hasEvents = true
 				if emitsVar == "" {
+					// First event on this component: emit / normalized-emit / props vars.
 					emitsVar = c.newInternalVariable()
 					c.serviceText.WriteString("let ")
 					c.serviceText.WriteString(emitsVar)
-					c.serviceText.WriteString("!: __VLS_ResolveEmits<typeof ")
-					c.serviceText.WriteString(componentVar)
-					c.serviceText.WriteString(", typeof ")
+					c.serviceText.WriteString("!: typeof ")
 					c.serviceText.WriteString(ctxVarName)
-					c.serviceText.WriteString(".emit>;\n")
+					c.serviceText.WriteString(".emit;\n")
+
+					normEmitsVar = c.newInternalVariable()
+					c.serviceText.WriteString("let ")
+					c.serviceText.WriteString(normEmitsVar)
+					c.serviceText.WriteString("!: __VLS_NormalizeEmits<typeof ")
+					c.serviceText.WriteString(emitsVar)
+					c.serviceText.WriteString(">;\n")
+
+					propsVarName = c.newInternalVariable()
+					c.serviceText.WriteString("let ")
+					c.serviceText.WriteString(propsVarName)
+					c.serviceText.WriteString("!: __VLS_FunctionalComponentProps<typeof ")
+					c.serviceText.WriteString(functionalVar)
+					c.serviceText.WriteString(", typeof ")
+					c.serviceText.WriteString(vnodeVar)
+					c.serviceText.WriteString(">;\n")
 				}
 
-				// Volar tuple format: (emitObj as typeof emitsVar, onEventObj)
+				// const __VLS_N: __VLS_NormalizeComponentEvent<props, normEmits, 'onX', 'x', 'camelX'> = {
+				// onX: (handler)};
 				eventVar := c.newInternalVariable()
 				c.serviceText.WriteString("const ")
 				c.serviceText.WriteString(eventVar)
 				c.serviceText.WriteString(": __VLS_NormalizeComponentEvent<typeof ")
 				c.serviceText.WriteString(propsVarName)
 				c.serviceText.WriteString(", typeof ")
-				c.serviceText.WriteString(emitsVar)
+				c.serviceText.WriteString(normEmitsVar)
 				c.serviceText.WriteString(", '")
 				camelize("on-"+dir.Arg, &c.serviceText)
 				c.serviceText.WriteString("', '")
-				emitName := dir.Arg
-				c.serviceText.WriteString(emitName)
+				c.serviceText.WriteString(dir.Arg)
 				c.serviceText.WriteString("', '")
-				camelize(emitName, &c.serviceText)
-				c.serviceText.WriteString("'> = (\n{ ")
-				camelizedEmit := camelizeStr(emitName)
-				if needsQuoting(camelizedEmit) {
-					c.serviceText.WriteString("'")
-					c.serviceText.WriteString(camelizedEmit)
-					c.serviceText.WriteString("'")
-				} else {
-					c.serviceText.WriteString(camelizedEmit)
-				}
-				c.serviceText.WriteString(": {} as any } as typeof ")
-				c.serviceText.WriteString(emitsVar)
-				c.serviceText.WriteString(",\n{ ")
+				camelize(dir.Arg, &c.serviceText)
+				c.serviceText.WriteString("'> = {\n")
 				onName := camelizeStr("on-" + dir.Arg)
 				if needsQuoting(onName) {
 					c.serviceText.WriteString("'")
@@ -607,18 +634,14 @@ func (c *templateCodegenCtx) visit(el *vue_ast.Node) {
 				}
 				c.serviceText.WriteString(": ")
 				c.generateEventExpression(dir)
-				c.serviceText.WriteString("});\n")
+				c.serviceText.WriteString("};\n")
 			}
 
-			// Emit slot extraction if component has children (before visiting children)
+			// Component with children: reference the default slot (Volar form
+			// `<ctx>.slots!.default;`), then descend into children.
 			if len(elem.Children) > 0 {
-				slotVar := c.newInternalVariable()
-				_ = slotVar // slotVar is referenced in template but not used by golar yet
-				c.serviceText.WriteString("const { default: ")
-				c.serviceText.WriteString(slotVar)
-				c.serviceText.WriteString(" } = ")
 				c.serviceText.WriteString(ctxVarName)
-				c.serviceText.WriteString(".slots!;\n")
+				c.serviceText.WriteString(".slots!.default;\n")
 				c.pushUsedVarScope()
 				componentHasChildren = true
 			}
@@ -638,32 +661,29 @@ func (c *templateCodegenCtx) visit(el *vue_ast.Node) {
 			if parentComponentCtx == "" {
 				c.reportDiagnostic(slotDirective.Loc.WithEnd(slotDirective.Loc.Pos()+len(slotDirective.RawName)), vue_diagnostics.Slot_does_not_belong_to_the_parent_component)
 			} else if slotDirective.Expression != nil {
+				// Volar 2.2.x: `const { <name>: __VLS_thisSlot } = <ctx>.slots!;`
+				// then `const [<bindings>] = __VLS_getSlotParams(__VLS_thisSlot);`.
+				// The intermediate var is the fixed name __VLS_thisSlot (no internal
+				// index) and getSlotParams takes a single arg (no `!`, no decl). This
+				// is what breaks the `row` implicit-any / self-initializer circularity
+				// on generic-component slot destructuring.
 				c.enterScope()
-				slotVar := c.newInternalVariable()
 				c.serviceText.WriteString("{\nconst { ")
 				if slotDirective.Arg == "" {
 					c.serviceText.WriteString("default: ")
-				} else {
-					// TODO: dynamic name
+				} else if needsQuoting(slotDirective.Arg) {
 					c.serviceText.WriteByte('\'')
 					c.serviceText.WriteString(slotDirective.Arg)
 					c.serviceText.WriteString("': ")
+				} else {
+					c.serviceText.WriteString(slotDirective.Arg)
+					c.serviceText.WriteString(": ")
 				}
-				c.serviceText.WriteString(slotVar)
-				c.serviceText.WriteString("} = ")
-
+				c.serviceText.WriteString("__VLS_thisSlot } = ")
 				c.serviceText.WriteString(parentComponentCtx)
-				c.serviceText.WriteString(".slots!\nconst [")
-				typeAnnotation := c.mapSlotBindingExpression(slotDirective.Expression)
-				c.serviceText.WriteString("] = __VLS_vSlot(")
-				c.serviceText.WriteString(slotVar)
-				c.serviceText.WriteString("!")
-				if typeAnnotation != "" {
-					c.serviceText.WriteString(", (_")
-					c.serviceText.WriteString(typeAnnotation)
-					c.serviceText.WriteString(", ) => [] as any")
-				}
-				c.serviceText.WriteString(")\n")
+				c.serviceText.WriteString(".slots!;\nconst [")
+				c.mapSlotBindingExpression(slotDirective.Expression)
+				c.serviceText.WriteString("] = __VLS_getSlotParams(__VLS_thisSlot);\n")
 			}
 		}
 
@@ -699,21 +719,14 @@ func (c *templateCodegenCtx) visit(el *vue_ast.Node) {
 			if componentHasChildren {
 				c.drainUsedVarScope()
 			}
-			needsDeferredCtx := componentHasChildren || hasEvents
-			if needsDeferredCtx {
+			if componentHasChildren || hasEvents {
+				// ctx var (deferred), referencing compRef & vnodeVar. The
+				// FunctionalComponentProps var for events is declared inline in the
+				// event loop, so it is not re-emitted here.
 				c.serviceText.WriteString("var ")
 				c.serviceText.WriteString(ctxVarName)
-				c.serviceText.WriteString("!: __VLS_FunctionalComponentCtx<typeof ")
-				c.serviceText.WriteString(componentVar)
-				c.serviceText.WriteString(", typeof ")
-				c.serviceText.WriteString(vnodeVar)
-				c.serviceText.WriteString(">;\n")
-			}
-			if hasEvents {
-				c.serviceText.WriteString("var ")
-				c.serviceText.WriteString(propsVarName)
-				c.serviceText.WriteString("!: __VLS_FunctionalComponentProps<typeof ")
-				c.serviceText.WriteString(componentVar)
+				c.serviceText.WriteString("!: __VLS_PickFunctionalComponentCtx<typeof ")
+				c.serviceText.WriteString(compRef)
 				c.serviceText.WriteString(", typeof ")
 				c.serviceText.WriteString(vnodeVar)
 				c.serviceText.WriteString(">;\n")
@@ -823,9 +836,9 @@ func (c *templateCodegenCtx) generateSlotTypes() {
 	// Build the intersection as `{} & {...} & {...};` — a single declaration.
 	// A `;` after each member (instead of only at the end) would terminate the
 	// type after the first member, making the rest a syntax error (multi-slot).
-	c.serviceText.WriteString("type __VLS_Slots = {}\n")
+	c.serviceText.WriteString("type __VLS_Slots = {}")
 	for _, sp := range c.slotProps {
-		c.serviceText.WriteString("& { ")
+		c.serviceText.WriteString("\n& { ")
 		if needsQuoting(sp.name) {
 			c.serviceText.WriteString("'")
 			c.serviceText.WriteString(sp.name)
@@ -835,7 +848,7 @@ func (c *templateCodegenCtx) generateSlotTypes() {
 		}
 		c.serviceText.WriteString("?: (props: typeof ")
 		c.serviceText.WriteString(sp.propsVar)
-		c.serviceText.WriteString(") => any }\n")
+		c.serviceText.WriteString(") => any }")
 	}
 	c.serviceText.WriteString(";\n")
 }
@@ -1270,13 +1283,14 @@ func getStaticClassName(elem *vue_ast.ElementNode) string {
 
 // emitScopedClassAssertion emits /** @type {__VLS_StyleScopedClasses['class']} */; after an element
 // with a class attribute, when a scoped style block exists.
-func (c *templateCodegenCtx) emitScopedClassAssertion(elem *vue_ast.ElementNode) {
+// collectScopedClasses records the static classes of an element (in first-seen
+// order). Volar emits the `__VLS_StyleScopedClasses[...]` assertions deferred, at
+// the end of the template body (see generateTemplate), not inline per element.
+func (c *templateCodegenCtx) collectScopedClasses(elem *vue_ast.ElementNode) {
 	classAttr := getStaticClassName(elem)
 	if classAttr == "" {
 		return
 	}
-	// A class attribute may list several space-separated classes; Volar emits one
-	// assertion per class so each is checked against the scoped <style> classes.
 	for _, className := range strings.Fields(classAttr) {
 		if c.scopedClassesSet == nil {
 			c.scopedClassesSet = map[string]bool{}
@@ -1285,9 +1299,22 @@ func (c *templateCodegenCtx) emitScopedClassAssertion(elem *vue_ast.ElementNode)
 			c.scopedClassesSet[className] = true
 			c.scopedClasses = append(c.scopedClasses, className)
 		}
-		c.serviceText.WriteString("/** @type {__VLS_StyleScopedClasses['")
-		c.serviceText.WriteString(className)
-		c.serviceText.WriteString("']} */;\n")
+	}
+}
+
+// emitRefMarker emits `/** @type {typeof __VLS_ctx.<ref>} */;` after an element
+// carrying a static `ref="..."` attribute.
+func (c *templateCodegenCtx) emitRefMarker(elem *vue_ast.ElementNode) {
+	for _, prop := range elem.Props {
+		if prop.Kind != vue_ast.KindAttribute {
+			continue
+		}
+		attr := prop.AsAttribute()
+		if attr.Name == "ref" && attr.Value != nil {
+			c.serviceText.WriteString("/** @type {typeof __VLS_ctx.")
+			c.serviceText.WriteString(attr.Value.Content)
+			c.serviceText.WriteString("} */;\n")
+		}
 	}
 }
 

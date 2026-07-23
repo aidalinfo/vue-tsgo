@@ -164,6 +164,10 @@ type codegenCtx struct {
 	// setupBindings tracks script setup binding names (imports, vars, functions, etc.)
 	// Used to distinguish imported components from global components in template codegen.
 	setupBindings collections.Set[string]
+	// noCtxPrefix holds binding names that must NOT be prefixed with `__VLS_ctx.` in
+	// template expressions — the defineProps result var, which Volar accesses bare
+	// (`props.foo`) since it is a lexical const and lives outside the setup() return.
+	noCtxPrefix collections.Set[string]
 }
 
 type templateRefInfo struct {
@@ -258,6 +262,7 @@ func generateTemplateBuffered(base *codegenCtx, el *vue_ast.ElementNode) templat
 		options:                 base.options,
 		hasScopedStyle:          base.hasScopedStyle,
 		setupBindings:           base.setupBindings,
+		noCtxPrefix:             base.noCtxPrefix,
 		cssVBinds:               base.cssVBinds,
 	}
 	generateTemplate(&tmpCtx, el)
