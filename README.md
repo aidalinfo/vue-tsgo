@@ -7,6 +7,19 @@
 
 ---
 
+> ## ℹ️ About this fork
+>
+> **This repository is a fork of [`NikhilVerma/vue-tsgo`](https://github.com/NikhilVerma/vue-tsgo)** (itself derived from `nonfx/golar`). **Practically all of the work — the Vue codegen, the typescript-go integration, the language server — is the upstream author's.**
+>
+> What [aidalinfo](https://github.com/aidalinfo) changed is minimal and purely about **distribution and CI**, so the org can consume it easily on its Nuxt projects:
+> - published to npm under the name **[`vue-go-tsc`](https://www.npmjs.com/package/vue-go-tsc)** (the name `vue-tsgo` was taken);
+> - binaries released from this fork's GitHub Releases;
+> - a [CI integration guide](./docs/integration.md) for our GitHub Actions pipelines.
+>
+> **All technical credit belongs to the upstream project.** If you're looking for the source of truth, start there.
+
+---
+
 ## Why vue-tsgo?
 
 **vue-tsgo** (formerly Golar) is a native Go-based type checker for Vue 3 Single File Components. It's designed to replace `vue-tsc` with:
@@ -23,9 +36,23 @@ Perfect for CI/CD pipelines, large monorepos, and developers who want instant fe
 
 ## Installation
 
-### Option 1: VS Code Extension
+### Option 1: npm (recommended for CI)
 
-1. Download the `.vsix` for your platform from [Releases](https://github.com/NikhilVerma/vue-tsgo/releases)
+```bash
+# Global
+npm install -g vue-go-tsc
+
+# Or as a project dev dependency
+pnpm add -D vue-go-tsc
+```
+
+The postinstall step downloads the matching native binary from this fork's
+[Releases](https://github.com/aidalinfo/vue-tsgo/releases). See the
+[CI integration guide](./docs/integration.md) for Nuxt projects.
+
+### Option 2: VS Code Extension
+
+1. Download the `.vsix` for your platform from [Releases](https://github.com/aidalinfo/vue-tsgo/releases)
 2. Install:
    ```bash
    code --install-extension vue-tsgo-<version>@<platform>.vsix
@@ -33,10 +60,10 @@ Perfect for CI/CD pipelines, large monorepos, and developers who want instant fe
 3. Disable **Vue - Official (Volar)** extension to avoid conflicts
 4. Reload VS Code
 
-### Option 2: Build from Source
+### Option 3: Build from Source
 
 ```bash
-git clone https://github.com/NikhilVerma/vue-tsgo.git
+git clone https://github.com/aidalinfo/vue-tsgo.git
 cd vue-tsgo
 git submodule update --init
 cd thirdparty/typescript-go
@@ -76,13 +103,17 @@ time ./golar/tsgo -b --noEmit
 
 ### 3. Use in CI
 
+With the npm package as a dev dependency (no build step needed):
+
 ```yaml
 # .github/workflows/ci.yml
 - name: Type check Vue components
-  run: |
-    make build-binary
-    ./golar/tsgo -b --noEmit
+  run: pnpm exec vue-go-tsc -b --noEmit
 ```
+
+See the full [CI integration guide](./docs/integration.md) for Nuxt projects
+(both `nuxt prepare` and build-mode workflows, plus the aidalinfo self-hosted
+runner setup).
 
 ---
 
@@ -189,6 +220,7 @@ For architecture details, see [docs/architecture.md](./docs/architecture.md).
 
 This project is built on the shoulders of giants:
 
+- **[vue-tsgo](https://github.com/NikhilVerma/vue-tsgo)** by [@NikhilVerma](https://github.com/NikhilVerma) — The direct upstream this fork redistributes. Practically all of the code is theirs.
 - **[Golar](https://github.com/auvred/golar)** by [@auvred](https://github.com/auvred) — Original project that vue-tsgo forked and heavily modified
 - **[Volar.js](https://github.com/volarjs/volar.js)** by [@johnsoncodehk](https://github.com/johnsoncodehk) — Reference implementation for Vue language features
 - **[typescript-go](https://github.com/microsoft/typescript-go)** — Native TypeScript compiler in Go
@@ -201,6 +233,7 @@ This project is built on the shoulders of giants:
 
 ---
 
-Found a bug? [Open an issue](https://github.com/NikhilVerma/vue-tsgo/issues/new/choose)
+Found a bug in the core type checker? Please report it upstream at
+[NikhilVerma/vue-tsgo](https://github.com/NikhilVerma/vue-tsgo/issues/new/choose).
 
-Want a feature? [Start a discussion](https://github.com/NikhilVerma/vue-tsgo/discussions)
+For packaging/CI issues specific to this fork, [open an issue here](https://github.com/aidalinfo/vue-tsgo/issues/new/choose).

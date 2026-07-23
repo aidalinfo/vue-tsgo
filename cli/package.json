@@ -1,7 +1,7 @@
 {
-  "name": "vue-tsgo",
+  "name": "vue-go-tsc",
   "version": "0.1.0",
-  "description": "Blazingly fast Vue 3 type checker powered by typescript-go",
+  "description": "Blazingly fast Vue 3 type checker powered by typescript-go — a Go-native alternative to vue-tsc",
   "keywords": [
     "vue",
     "typescript",
@@ -9,20 +9,25 @@
     "vue3",
     "sfc",
     "volar",
-    "vue-tsc"
+    "vue-tsc",
+    "tsgo",
+    "nuxt"
   ],
-  "homepage": "https://github.com/NikhilVerma/vue-tsgo#readme",
+  "homepage": "https://github.com/aidalinfo/vue-tsgo#readme",
   "bugs": {
-    "url": "https://github.com/NikhilVerma/vue-tsgo/issues"
+    "url": "https://github.com/aidalinfo/vue-tsgo/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/NikhilVerma/vue-tsgo.git"
+    "url": "git+https://github.com/aidalinfo/vue-tsgo.git"
   },
   "license": "MIT",
   "author": "Nikhil Verma <https://github.com/NikhilVerma>",
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/"
+  },
   "bin": {
-    "vue-tsgo": "./bin/vue-tsgo"
+    "vue-go-tsc": "./bin/vue-go-tsc"
   },
   "files": [
     "bin/",

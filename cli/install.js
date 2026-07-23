@@ -64,14 +64,14 @@ async function install() {
   try {
     // Check if binary already exists (useful for development)
     if (existsSync(BIN_PATH)) {
-      console.log('✓ vue-tsgo binary already exists');
+      console.log('✓ vue-go-tsc binary already exists');
       return;
     }
 
-    console.log('Installing vue-tsgo...');
+    console.log('Installing vue-go-tsc...');
 
     const platformBinary = getPlatformBinary();
-    const downloadUrl = `https://github.com/nonfx/golar/releases/download/v${PACKAGE_VERSION}/${platformBinary}`;
+    const downloadUrl = `https://github.com/aidalinfo/vue-tsgo/releases/download/v${PACKAGE_VERSION}/${platformBinary}`;
 
     console.log(`Downloading from: ${downloadUrl}`);
 
@@ -88,12 +88,12 @@ async function install() {
       chmodSync(BIN_PATH, 0o755);
     }
 
-    console.log('✓ vue-tsgo installed successfully!');
-    console.log(`\nRun 'vue-tsgo --version' to verify installation`);
+    console.log('✓ vue-go-tsc installed successfully!');
+    console.log(`\nRun 'vue-go-tsc --version' to verify installation`);
   } catch (error) {
     console.error('✗ Installation failed:', error.message);
     console.error('\nManual installation:');
-    console.error(`1. Download binary from: https://github.com/nonfx/golar/releases/tag/v${PACKAGE_VERSION}`);
+    console.error(`1. Download binary from: https://github.com/aidalinfo/vue-tsgo/releases/tag/v${PACKAGE_VERSION}`);
     console.error(`2. Place in: ${BIN_DIR}`);
     console.error(`3. Rename to: ${BINARY_NAME}`);
     process.exit(1);

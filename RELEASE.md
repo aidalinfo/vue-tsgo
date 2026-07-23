@@ -74,7 +74,7 @@ cat ~/.npmrc | grep "//registry.npmjs.org/:_authToken"
 ```
 
 Add to GitHub:
-1. Go to https://github.com/NikhilVerma/vue-tsgo/settings/secrets/actions
+1. Go to https://github.com/aidalinfo/vue-tsgo/settings/secrets/actions
 2. Click **New repository secret**
 3. Name: `NPM_TOKEN`
 4. Value: Your npm token (starts with `npm_`)
@@ -94,7 +94,7 @@ Add to GitHub:
    - Create and copy the token
 
 3. **Add to GitHub**:
-   - Go to https://github.com/NikhilVerma/vue-tsgo/settings/secrets/actions
+   - Go to https://github.com/aidalinfo/vue-tsgo/settings/secrets/actions
    - Create secret: `VSCE_TOKEN` = your PAT
 
 ### 3. Verify Secrets
@@ -145,7 +145,7 @@ After releasing:
 - [ ] Verify VS Code marketplace: https://marketplace.visualstudio.com/items?itemName=NikhilVerma.vue-tsgo
 - [ ] Test installation:
   ```bash
-  npm install -g vue-tsgo@latest
+  npm install -g vue-go-tsc@latest
   vue-tsgo --version
   ```
 - [ ] Announce on social media / Vue community
@@ -177,7 +177,7 @@ Check the **Actions** tab for error details:
 
 ```bash
 # Unpublish from npm (within 72 hours)
-npm unpublish vue-tsgo@0.2.0
+npm unpublish vue-go-tsc@0.2.0
 
 # Unpublish from VS Code marketplace
 npx @vscode/vsce unpublish NikhilVerma.vue-tsgo@0.2.0
@@ -215,7 +215,7 @@ Check marketplace page:
 https://marketplace.visualstudio.com/items?itemName=NikhilVerma.vue-tsgo
 
 ### GitHub Releases
-https://github.com/NikhilVerma/vue-tsgo/releases
+https://github.com/aidalinfo/vue-tsgo/releases
 
 ---
 
@@ -248,7 +248,7 @@ git push origin v0.1.1-beta.0
 
 Users can install beta:
 ```bash
-npm install -g vue-tsgo@beta
+npm install -g vue-go-tsc@beta
 ```
 
 ---
@@ -272,4 +272,4 @@ npm install -g vue-tsgo@beta
 
 ---
 
-**Questions?** Open a [Discussion](https://github.com/NikhilVerma/vue-tsgo/discussions)
+**Questions?** Open a [Discussion](https://github.com/aidalinfo/vue-tsgo/discussions)

@@ -89,6 +89,6 @@ First public beta release of vue-tsgo (formerly Golar) — a native Go-based typ
 
 ---
 
-[Unreleased]: https://github.com/NikhilVerma/vue-tsgo/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/NikhilVerma/vue-tsgo/releases/tag/v0.1.0
-[0.0.1]: https://github.com/NikhilVerma/vue-tsgo/releases/tag/v0.0.1
+[Unreleased]: https://github.com/aidalinfo/vue-tsgo/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/aidalinfo/vue-tsgo/releases/tag/v0.1.0
+[0.0.1]: https://github.com/aidalinfo/vue-tsgo/releases/tag/v0.0.1

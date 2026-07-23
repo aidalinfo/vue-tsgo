@@ -38,7 +38,7 @@ All preparation work is done! The following have been completed:
 - ✅ Placeholders for pinia and router examples
 
 ### Module Updates
-- ✅ Changed github.com/auvred/golar → github.com/NikhilVerma/vue-tsgo
+- ✅ Changed github.com/auvred/golar → github.com/aidalinfo/vue-tsgo
 - ✅ Updated all Go imports
 - ✅ Updated package.json files
 - ✅ Updated LICENSE copyright
@@ -58,7 +58,7 @@ npm login
 cat ~/.npmrc  # Copy the token
 
 # Add to GitHub Secrets
-# Go to: https://github.com/NikhilVerma/vue-tsgo/settings/secrets/actions
+# Go to: https://github.com/aidalinfo/vue-tsgo/settings/secrets/actions
 # Create secret: NPM_TOKEN = <your token>
 ```
 
@@ -77,7 +77,7 @@ cat ~/.npmrc  # Copy the token
 # Copy the token
 
 # 3. Add to GitHub Secrets
-# Go to: https://github.com/NikhilVerma/vue-tsgo/settings/secrets/actions
+# Go to: https://github.com/aidalinfo/vue-tsgo/settings/secrets/actions
 # Create secret: VSCE_TOKEN = <your PAT>
 ```
 
@@ -101,7 +101,7 @@ vue-tsgo --version
 
 ### 4. Enable GitHub Discussions (Recommended)
 
-1. Go to https://github.com/NikhilVerma/vue-tsgo/settings
+1. Go to https://github.com/aidalinfo/vue-tsgo/settings
 2. Features → Check "Discussions"
 3. Set up categories:
    - General
@@ -144,7 +144,7 @@ git push origin v0.1.0
 
 ```bash
 # Watch the release workflow
-# https://github.com/NikhilVerma/vue-tsgo/actions
+# https://github.com/aidalinfo/vue-tsgo/actions
 
 # The workflow will:
 # 1. Build binaries for all platforms
@@ -156,7 +156,7 @@ git push origin v0.1.0
 
 ### Step 4: Finalize GitHub Release
 
-1. Go to https://github.com/NikhilVerma/vue-tsgo/releases
+1. Go to https://github.com/aidalinfo/vue-tsgo/releases
 2. Find the draft release (created by workflow)
 3. Edit release notes if needed
 4. **Click "Publish release"** to make it public
@@ -165,7 +165,7 @@ git push origin v0.1.0
 
 ```bash
 # Test npm package
-npm install -g vue-tsgo
+npm install -g vue-go-tsc
 vue-tsgo --version
 
 # Test VS Code extension
@@ -195,9 +195,9 @@ A blazingly fast type checker for Vue 3 SFCs, powered by typescript-go.
 💾 Lower memory usage (native Go)
 🎯 98% feature parity with Volar
 
-npm install -g vue-tsgo
+npm install -g vue-go-tsc
 
-https://github.com/NikhilVerma/vue-tsgo
+https://github.com/aidalinfo/vue-tsgo
 ```
 
 ### Monitor Initial Feedback
@@ -239,7 +239,7 @@ npx @vscode/vsce publish --packagePath vue-tsgo-0.1.0@darwin-arm64.vsix
 
 ```bash
 # Unpublish from npm (within 72 hours)
-npm unpublish vue-tsgo@0.1.0
+npm unpublish vue-go-tsc@0.1.0
 
 # Unpublish from VS Code marketplace
 npx @vscode/vsce unpublish nonfx.vue-tsgo@0.1.0
@@ -265,7 +265,7 @@ Track these after release:
 
 - **npm downloads**: https://npm-stat.com/charts.html?package=vue-tsgo
 - **VS Code installs**: Extension page shows install count
-- **GitHub stars**: https://github.com/NikhilVerma/vue-tsgo/stargazers
+- **GitHub stars**: https://github.com/aidalinfo/vue-tsgo/stargazers
 - **GitHub issues**: Quality and quantity of bug reports
 - **Community engagement**: Discussions, PRs, contributions
 

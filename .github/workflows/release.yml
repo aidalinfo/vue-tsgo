@@ -181,20 +181,21 @@ jobs:
         id: notes
         run: |
           cat > release-notes.md << 'EOF'
+          > Fork of [NikhilVerma/vue-tsgo](https://github.com/NikhilVerma/vue-tsgo) redistributed by aidalinfo.
+          > Only the npm name (`vue-go-tsc`) and release location differ — all technical credit is upstream.
+
           ## Installation
 
           ### npm (Global CLI)
           ```bash
-          npm install -g vue-tsgo@${{ needs.prepare.outputs.version }}
+          npm install -g vue-go-tsc@${{ needs.prepare.outputs.version }}
           ```
 
-          ### VS Code Extension
-          Download the `.vsix` for your platform and install:
+          ### As a project dev dependency (CI)
           ```bash
-          code --install-extension vue-tsgo-${{ needs.prepare.outputs.version }}@<platform>.vsix
+          pnpm add -D vue-go-tsc@${{ needs.prepare.outputs.version }}
           ```
-
-          Or install from [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=NikhilVerma.vue-tsgo)
+          See the [CI integration guide](https://github.com/aidalinfo/vue-tsgo/blob/main/docs/integration.md).
 
           ### Standalone Binaries
           Download the binary for your platform and add to PATH.
@@ -225,7 +226,9 @@ jobs:
           files: release/*
           generate_release_notes: true
 
-  # Publish to npm
+  # Publish to npm (public). Follows the aidalinfo powerpackages convention:
+  # target registry driven by publishConfig.registry, skip if the version is
+  # already published, auth via NPM_TOKEN.
   publish-npm:
     needs: [prepare, build-binaries, create-release]
     runs-on: ubuntu-latest
@@ -235,70 +238,68 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
 
-      - name: Update CLI version
+      - name: Sync CLI version to release
         working-directory: cli
         run: npm version ${{ needs.prepare.outputs.version }} --no-git-tag-version --allow-same-version
 
-      - name: Publish to npm
+      - name: Resolve package metadata
+        id: meta
         working-directory: cli
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          if [ -z "$NODE_AUTH_TOKEN" ]; then
-            echo "❌ NPM_TOKEN secret not set"
-            echo "ℹ️  Set it at: https://github.com/${{ github.repository }}/settings/secrets/actions"
-            exit 1
-          fi
-          npm publish --access public
+          NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          REGISTRY=$(node -p "require('./package.json').publishConfig?.registry || 'https://registry.npmjs.org/'")
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "registry=$REGISTRY" >> "$GITHUB_OUTPUT"
+          echo "::notice::$NAME@$VERSION → $REGISTRY"
 
-  # Publish to VS Code Marketplace
-  publish-marketplace:
-    needs: [prepare, build-vsix, create-release]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download all VSIX artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: vsix-*
-          path: vsix
-          merge-multiple: true
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Publish to VS Code Marketplace
-        working-directory: vsix
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_TOKEN }}
+      # Skip early: if the version already exists on the target registry we do
+      # not attempt to publish again (idempotent re-runs).
+      - name: Check if version already published
+        id: check
         run: |
-          if [ -z "$VSCE_PAT" ]; then
-            echo "❌ VSCE_TOKEN secret not set"
-            echo "ℹ️  Set it at: https://github.com/${{ github.repository }}/settings/secrets/actions"
-            exit 1
+          NAME='${{ steps.meta.outputs.name }}'
+          VERSION='${{ steps.meta.outputs.version }}'
+          if npm view "${NAME}@${VERSION}" version --registry='${{ steps.meta.outputs.registry }}' > /dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::${NAME}@${VERSION} already published → skip"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::${NAME}@${VERSION} not on registry → publishing"
           fi
 
-          for vsix in *.vsix; do
-            echo "📦 Publishing ${vsix}..."
-            npx @vscode/vsce publish --packagePath "$vsix" --pat "$VSCE_PAT"
-          done
-
-      - name: Publish to Open VSX (optional)
-        if: env.OVSX_TOKEN != ''
-        working-directory: vsix
+      - name: Configure npm auth
+        if: steps.check.outputs.skip == 'false'
         env:
-          OVSX_TOKEN: ${{ secrets.OVSX_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          for vsix in *.vsix; do
-            echo "📦 Publishing ${vsix} to Open VSX..."
-            npx ovsx publish "$vsix" -p "$OVSX_TOKEN" || echo "⚠️  Open VSX publish failed (non-fatal)"
-          done
+          TARGET='${{ steps.meta.outputs.registry }}'
+          TARGET_HOST=$(printf '%s' "$TARGET" | sed -E 's#^https?://##')
+          if [ -z "$NPM_TOKEN" ]; then
+            echo "::error::NPM_TOKEN secret not set — set it at https://github.com/${{ github.repository }}/settings/secrets/actions"
+            exit 1
+          fi
+          {
+            echo "registry=${TARGET}"
+            echo "email=ci@aidalinfo.fr"
+            echo "//${TARGET_HOST}:_authToken=${NPM_TOKEN}"
+          } > ~/.npmrc
+
+      - name: Publish to npm
+        if: steps.check.outputs.skip == 'false'
+        working-directory: cli
+        run: npm publish --access public
+
+  # NOTE: VS Code Marketplace publishing is intentionally disabled for the
+  # aidalinfo fork — the extension is published by the upstream author under
+  # the `NikhilVerma.vue-tsgo` publisher. The `.vsix` artifacts are still built
+  # (see build-vsix) and attached to the GitHub Release for manual install.
 
   # Summary
   release-summary:
-    needs: [prepare, create-release, publish-npm, publish-marketplace]
+    needs: [prepare, create-release, publish-npm]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -317,20 +318,14 @@ jobs:
           fi
 
           if [ "${{ needs.publish-npm.result }}" = "success" ]; then
-            echo "✅ Published to npm" >> $GITHUB_STEP_SUMMARY
+            echo "✅ Published to npm (vue-go-tsc)" >> $GITHUB_STEP_SUMMARY
           else
             echo "❌ npm publish failed" >> $GITHUB_STEP_SUMMARY
-          fi
-
-          if [ "${{ needs.publish-marketplace.result }}" = "success" ]; then
-            echo "✅ Published to VS Code Marketplace" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "❌ VS Code Marketplace publish failed" >> $GITHUB_STEP_SUMMARY
           fi
 
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "## 📦 Installation" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo '```bash' >> $GITHUB_STEP_SUMMARY
-          echo "npm install -g vue-tsgo@${{ needs.prepare.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "npm install -g vue-go-tsc@${{ needs.prepare.outputs.version }}" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
