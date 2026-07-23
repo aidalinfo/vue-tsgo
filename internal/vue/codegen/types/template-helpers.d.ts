@@ -11,25 +11,40 @@ declare global {
 	const __VLS_directiveBindingRestFields: { instance: null; oldValue: null; modifiers: any; dir: any };
 
 	type __VLS_Elements = __VLS_SpreadMerge<SVGElementTagNameMap, HTMLElementTagNameMap>;
+	// Volar 2.2.x names (superset). __VLS_NativeElements replaces __VLS_Elements at
+	// consumer sites; __VLS_intrinsicElements is a const value (not a `let` local).
+	type __VLS_NativeElements = __VLS_SpreadMerge<SVGElementTagNameMap, HTMLElementTagNameMap>;
+	type __VLS_IntrinsicElements = import('vue/jsx-runtime').JSX.IntrinsicElements;
+	type __VLS_Element = import('vue/jsx-runtime').JSX.Element;
+	type __VLS_GlobalComponents = import('vue').GlobalComponents;
+	type __VLS_GlobalDirectives = import('vue').GlobalDirectives;
+	const __VLS_intrinsicElements: __VLS_IntrinsicElements;
 	type __VLS_IsAny<T> = 0 extends 1 & T ? true : false;
 	type __VLS_PickNotAny<A, B> = __VLS_IsAny<A> extends true ? B : A;
 	type __VLS_SpreadMerge<A, B> = Omit<A, keyof B> & B;
+	// Volar 2.2.x __VLS_WithComponent (6 params, no GlobalComponents param — it
+	// references the embedded-scope __VLS_GlobalComponents internally). The
+	// `N1 extends N0 ? Pick<…> : {…}` refinement breaks the generic-component
+	// inference circularity (the `row` TS7022 false positive).
 	type __VLS_WithComponent<
 		N0 extends string,
 		LocalComponents,
-		GlobalComponents,
 		Self,
 		N1 extends string,
-		N2 extends string = N1,
-		N3 extends string = N1,
-	> = N1 extends keyof LocalComponents ? { [K in N0]: LocalComponents[N1] }
-		: N2 extends keyof LocalComponents ? { [K in N0]: LocalComponents[N2] }
-		: N3 extends keyof LocalComponents ? { [K in N0]: LocalComponents[N3] }
+		N2 extends string,
+		N3 extends string,
+	> = N1 extends keyof LocalComponents ? N1 extends N0 ? Pick<LocalComponents, N0 extends keyof LocalComponents ? N0 : never> : { [K in N0]: LocalComponents[N1] }
+		: N2 extends keyof LocalComponents ? N2 extends N0 ? Pick<LocalComponents, N0 extends keyof LocalComponents ? N0 : never> : { [K in N0]: LocalComponents[N2] }
+		: N3 extends keyof LocalComponents ? N3 extends N0 ? Pick<LocalComponents, N0 extends keyof LocalComponents ? N0 : never> : { [K in N0]: LocalComponents[N3] }
 		: Self extends object ? { [K in N0]: Self }
-		: N1 extends keyof GlobalComponents ? { [K in N0]: GlobalComponents[N1] }
-		: N2 extends keyof GlobalComponents ? { [K in N0]: GlobalComponents[N2] }
-		: N3 extends keyof GlobalComponents ? { [K in N0]: GlobalComponents[N3] }
-		: {};
+		: N1 extends keyof __VLS_GlobalComponents ? N1 extends N0 ? Pick<__VLS_GlobalComponents, N0 extends keyof __VLS_GlobalComponents ? N0 : never> : { [K in N0]: __VLS_GlobalComponents[N1] }
+		: N2 extends keyof __VLS_GlobalComponents ? N2 extends N0 ? Pick<__VLS_GlobalComponents, N0 extends keyof __VLS_GlobalComponents ? N0 : never> : { [K in N0]: __VLS_GlobalComponents[N2] }
+		: N3 extends keyof __VLS_GlobalComponents ? N3 extends N0 ? Pick<__VLS_GlobalComponents, N0 extends keyof __VLS_GlobalComponents ? N0 : never> : { [K in N0]: __VLS_GlobalComponents[N3] }
+		: { [K in N0]: unknown };
+	type __VLS_PickFunctionalComponentCtx<T, K> = NonNullable<__VLS_PickNotAny<
+		'__ctx' extends keyof __VLS_PickNotAny<K, {}> ? K extends { __ctx?: infer Ctx } ? Ctx : never : any,
+		T extends (props: any, ctx: infer Ctx) => any ? Ctx : any
+	>>;
 	type __VLS_FunctionalComponentCtx<T, K> = __VLS_PickNotAny<
 		'__ctx' extends keyof __VLS_PickNotAny<K, {}> ? K extends { __ctx?: infer Ctx } ? NonNullable<Ctx> : never : any,
 		T extends (props: any, ctx: infer Ctx) => any ? Ctx : any
@@ -69,10 +84,12 @@ declare global {
 		onEvent extends keyof Props,
 		Event extends keyof Emits,
 		CamelizedEvent extends keyof Emits,
-	> = __VLS_IsFunction<Props, onEvent> extends true ? Props
+	> = (
+		__VLS_IsFunction<Props, onEvent> extends true ? Props
 		: __VLS_IsFunction<Emits, Event> extends true ? { [K in onEvent]?: Emits[Event] }
 		: __VLS_IsFunction<Emits, CamelizedEvent> extends true ? { [K in onEvent]?: Emits[CamelizedEvent] }
-		: Props;
+		: Props
+	) & Record<string, unknown>;
 	// fix https://github.com/vuejs/language-tools/issues/926
 	type __VLS_UnionToIntersection<U> = (U extends unknown ? (arg: U) => unknown : never) extends
 		((arg: infer P) => unknown) ? P : never;
@@ -113,7 +130,11 @@ declare global {
 	type __VLS_ResolveDirectives<T> = {
 		[K in keyof T & string as `v${Capitalize<K>}`]: T[K];
 	};
-	type __VLS_PrettifyGlobal<T> = (T extends any ? { [K in keyof T]: T[K] } : { [K in keyof T as K]: T[K] }) & {};
+	type __VLS_PrettifyGlobal<T> = { [K in keyof T]: T[K]; } & {};
+	type __VLS_UseTemplateRef<T> = Readonly<import('vue').ShallowRef<T | null>>;
+	const __VLS_placeholder: any;
+	const __VLS_unref: typeof import('vue').unref;
+	function __VLS_makeOptional<T>(t: T): { [K in keyof T]?: T[K] };
 
 	function __VLS_vFor<T>(source: T): T extends number ? [number, number][]
 		: T extends string ? [string, number][]
@@ -122,6 +143,41 @@ declare global {
 		: [T[keyof T], `${keyof T & (string | number)}`, number][];
 	// @ts-ignore
 	function __VLS_vSlot<S, D = void>(slot: S, decl?: D): D extends (...args: infer P) => any ? P : Parameters<__VLS_PickNotAny<NonNullable<S>, (...args: any[]) => any>>;
+	// Volar 2.2.x v-for source resolver (two overloads) — replaces __VLS_vFor.
+	function __VLS_getVForSourceType<T extends number | string | any[] | Iterable<any>>(source: T): [
+		item: T extends number ? number
+			: T extends string ? string
+			: T extends any[] ? T[number]
+			: T extends Iterable<infer T1> ? T1
+			: any,
+		index: number,
+	][];
+	function __VLS_getVForSourceType<T>(source: T): [
+		item: T[keyof T],
+		key: keyof T,
+		index: number,
+	][];
+	// @ts-ignore
+	function __VLS_getSlotParams<T>(slot: T): Parameters<__VLS_PickNotAny<NonNullable<T>, (...args: any[]) => any>>;
+	// @ts-ignore
+	function __VLS_getSlotParam<T>(slot: T): Parameters<__VLS_PickNotAny<NonNullable<T>, (...args: any[]) => any>>[0];
+	// Volar 2.2.x functional component factory (ctor branch returns the __ctx shape
+	// inline; fallback slots?: any). Replaces __VLS_asFunctionalComponent1.
+	function __VLS_asFunctionalComponent<T, K = T extends new (...args: any) => any ? InstanceType<T> : unknown>(t: T, instance?: K):
+		T extends new (...args: any) => any
+		? (props: (K extends { $props: infer Props } ? Props : any) & Record<string, unknown>, ctx?: any) => __VLS_Element & {
+			__ctx?: {
+				attrs?: any;
+				slots?: K extends { $slots: infer Slots } ? Slots : any;
+				emit?: K extends { $emit: infer Emit } ? Emit : any;
+				expose?(exposed: K): void;
+				props?: (K extends { $props: infer Props } ? Props : any) & Record<string, unknown>;
+			}
+		}
+		: T extends () => any ? (props: {}, ctx?: any) => ReturnType<T>
+		: T extends (...args: any) => any ? T
+		: (_: {} & Record<string, unknown>, ctx?: any) => { __ctx?: { attrs?: any, expose?: any, slots?: any, emit?: any, props?: {} & Record<string, unknown> } };
+	function __VLS_asFunctionalElement<T>(tag: T, endTag?: T): (attrs: T & Record<string, unknown>) => void;
 	function __VLS_asFunctionalDirective<T, ObjectDirective>(
 		dir: T,
 		od: ObjectDirective,
