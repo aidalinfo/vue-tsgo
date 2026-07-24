@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-24
+
+### 🐛 Bug Fixes
+
+- **CLI: prevent OOM kills on constrained runners** — the `vue-go-tsc` launcher
+  now sets a default `GOMEMLIMIT` (50% of total RAM) before spawning `tsgo`.
+  The Go runtime's default GC lets the heap roughly double before collecting,
+  which could exceed physical RAM on large Nuxt projects and get the process
+  OOM-killed by the kernel (observed ~6.9GB RSS on a 7.7GB self-hosted runner).
+  The soft limit keeps the GC aggressive under memory pressure. Override with
+  the `GOMEMLIMIT` env var when a project's live heap genuinely needs more.
+
 ## [0.2.0] - 2026-07-23
 
 ### Added

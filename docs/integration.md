@@ -229,6 +229,7 @@ base, puis retirez-le.
 | `vue-go-tsc: command not found` | Binaire non installé → relancez `pnpm install` ; testez `pnpm exec vue-go-tsc --version`. |
 | `-b` ne remonte aucune erreur | tsconfig non composite → utilisez le **Mode A** (`-p .nuxt/tsconfig.json`). |
 | Erreurs `.ts` inattendues vs `vue-tsc` | Delta amont typescript-go vs tsc (attendu). Voir la section Error Parity du README. |
+| Job `Killed` / exit 137 (OOM killer) | Sur les gros projets, le tas Go de `tsgo` peut dépasser la RAM du runner. Depuis la **v0.2.1**, le launcher pose automatiquement `GOMEMLIMIT` = *50 % de la RAM totale* (limite mémoire *soft* du runtime Go) pour éviter le kill tout en laissant de la place aux jobs concurrents. Pour ajuster, forcez une valeur explicite : `GOMEMLIMIT=6GiB pnpm typecheck:vue`. |
 
 ---
 

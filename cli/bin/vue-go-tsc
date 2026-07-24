@@ -2,14 +2,62 @@
 
 const { spawnSync } = require('child_process');
 const { join } = require('path');
+const os = require('os');
 
-const BINARY_NAME = process.platform === 'win32' ? 'tsgo.exe' : 'tsgo';
-const BIN_PATH = join(__dirname, BINARY_NAME);
+const GiB = 1024 ** 3;
 
-// Forward all arguments to the binary
-const result = spawnSync(BIN_PATH, process.argv.slice(2), {
-  stdio: 'inherit',
-  shell: false,
-});
+// Fraction of total RAM used as the default soft Go heap ceiling. Half of RAM
+// leaves ample headroom for the OS, Node, and any concurrent CI jobs on the
+// same runner, and is reproducible across runs (unlike instantaneous free RAM).
+const DEFAULT_MEM_FRACTION = 0.5;
 
-process.exit(result.status || 0);
+// Compute a soft Go heap ceiling (in bytes) for tsgo based on total RAM.
+//
+// tsgo is the typescript-go native binary; its Go runtime defaults to GOGC=100,
+// which lets the heap roughly double before the GC runs. On a large Nuxt
+// project that transient spike can exceed physical RAM and get the process
+// OOM-killed by the kernel. Setting GOMEMLIMIT makes the GC increasingly
+// aggressive as the heap approaches the limit, trading CPU for staying under
+// the ceiling. It is a *soft* limit — swap absorbs any remaining overshoot
+// instead of a hard kill, and it can be raised via the GOMEMLIMIT env var when
+// a project's live heap genuinely needs more.
+//
+// Returns null when total RAM is unknown/implausible (leave Go's default).
+function computeGoMemLimit(totalBytes) {
+  if (!Number.isFinite(totalBytes) || totalBytes <= 0) {
+    return null;
+  }
+  return Math.floor(totalBytes * DEFAULT_MEM_FRACTION);
+}
+
+// Return a copy of `env` with GOMEMLIMIT defaulted from total RAM. An explicit
+// GOMEMLIMIT is always respected (never overridden).
+function resolveEnv(env, totalBytes) {
+  const out = { ...env };
+  if (!out.GOMEMLIMIT) {
+    const limit = computeGoMemLimit(totalBytes);
+    if (limit) {
+      // A bare integer is interpreted by the Go runtime as a byte count.
+      out.GOMEMLIMIT = String(limit);
+    }
+  }
+  return out;
+}
+
+if (require.main === module) {
+  const BINARY_NAME = process.platform === 'win32' ? 'tsgo.exe' : 'tsgo';
+  const BIN_PATH = join(__dirname, BINARY_NAME);
+
+  const env = resolveEnv(process.env, os.totalmem());
+
+  // Forward all arguments to the binary
+  const result = spawnSync(BIN_PATH, process.argv.slice(2), {
+    stdio: 'inherit',
+    shell: false,
+    env,
+  });
+
+  process.exit(result.status || 0);
+}
+
+module.exports = { computeGoMemLimit, resolveEnv, GiB, DEFAULT_MEM_FRACTION };
