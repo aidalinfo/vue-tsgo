@@ -44,6 +44,9 @@ export type ServiceCode = {
 	sourceMap?: never
 	mappings: Mapping[]
 	ignoreMappings?: IgnoreDirectiveMapping[] | undefined
+	// Per-mapping bitmask of diagnostic codes the mapping must not report
+	// (Volar's `verification.shouldReport`); aligned with `mappings`.
+	mappingSuppressedCodes?: number[] | undefined
 })
 
 export type Promisable<T> = T | Promise<T>
@@ -59,7 +62,8 @@ export type CreatePluginOptions = {
 
 export function createPlugin(opts: CreatePluginOptions) {
 	if (worker_threads.isMainThread) {
-		const workers = new Array(Math.max(Math.min(os.cpus().length / 2, 4), 1))
+		const workerCount = Number(process.env.GOLAR_PLUGIN_WORKERS) || Math.max(Math.min(os.cpus().length / 2, 4), 1)
+		const workers = new Array(workerCount)
 			.fill(null)
 			.map(() => {
 				const w = {
@@ -98,6 +102,8 @@ export function createPlugin(opts: CreatePluginOptions) {
 			process.stdout.write(initialization)
 		}
 
+		// The host (tsgo) closing our stdin means it exited: stop the workers too.
+		process.stdin.on('end', () => process.exit(0))
 		process.stdin.on('data', data => {
 			assert.ok(data instanceof Buffer, 'Data is expected to be buffer')
 			ensureRecvBuffer(recvBufferLen + data.byteLength)
@@ -180,8 +186,9 @@ export function createPlugin(opts: CreatePluginOptions) {
 						const serviceTextLen = Buffer.byteLength(serviceCode.serviceText)
 						const mappingsLen = serviceCode.mappings.length * (4 * 4)
 						const ignoreMappingsLen = (serviceCode.ignoreMappings?.length ?? 0) * 8
+						const suppressedCodesLen = serviceCode.mappingSuppressedCodes?.length ?? 0
 
-						const sendBuffer = prepareSendBuffer(MSG_KIND.CREATE_SERVICE_CODE_RESPONSE, 8 + 1 + 1 + 4 + serviceTextLen + 4 + mappingsLen + 4 + ignoreMappingsLen)
+						const sendBuffer = prepareSendBuffer(MSG_KIND.CREATE_SERVICE_CODE_RESPONSE, 8 + 1 + 1 + 4 + serviceTextLen + 4 + mappingsLen + 4 + ignoreMappingsLen + 4 + suppressedCodesLen)
 
 						offset = HEADER_SIZE
 						offset = sendBuffer.writeBigUInt64LE(reqId, offset)
@@ -201,6 +208,11 @@ export function createPlugin(opts: CreatePluginOptions) {
 						for (const m of serviceCode.ignoreMappings ?? []) {
 							offset = writeUint32(m.serviceOffset, offset)
 							offset = writeUint32(m.serviceLength, offset)
+						}
+
+						offset = sendBuffer.writeUInt32LE(suppressedCodesLen, offset)
+						for (const mask of serviceCode.mappingSuppressedCodes ?? []) {
+							offset = sendBuffer.writeUInt8(mask, offset)
 						}
 
 						process.stdout.write(Buffer.copyBytesFrom(sendBuffer))

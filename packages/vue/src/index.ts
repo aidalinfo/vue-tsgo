@@ -1,73 +1,64 @@
 import { createVolarPlugin } from '@golar/volar'
-import { forEachEmbeddedCode } from '@vue/language-core'
-import * as ts from './typescript-lite.js'
-import compilerDom from '@vue/compiler-dom'
-import { createParsedCommandLineByJson } from '@vue/language-core'
-import { VueVirtualCode } from '@vue/language-core/lib/virtualCode/index.js'
-import PluginVueTsx from '@vue/language-core/lib/plugins/vue-tsx.js'
-import PluginFileVue from '@vue/language-core/lib/plugins/file-vue.js'
-import PluginVueScriptJs from '@vue/language-core/lib/plugins/vue-script-js.js'
-import PluginVueTemplateHtml from '@vue/language-core/lib/plugins/vue-template-html.js'
+import { createRequire } from 'node:module'
+import os from 'node:os'
+import path from 'node:path'
+import process from 'node:process'
 
-const { vueOptions } = createParsedCommandLineByJson(ts, ts.sys, ts.sys.getCurrentDirectory(), {})
+// Volar codegen mode: run the project's own `@vue/language-core` (the one its
+// `vue-tsc` uses) so the virtual TS code is exactly what vue-tsc checks.
+// Falls back to the bundled version when the project has no vue-tsc.
+function loadVolar() {
+	const cwd = process.cwd()
+	const projectRequire = createRequire(path.join(cwd, 'package.json'))
+	try {
+		const vueTscDir = path.dirname(projectRequire.resolve('vue-tsc/package.json'))
+		const vueTscRequire = createRequire(path.join(vueTscDir, 'package.json'))
+		return {
+			core: vueTscRequire('@vue/language-core') as typeof import('@vue/language-core'),
+			ts: vueTscRequire('typescript') as typeof import('typescript'),
+			coreVersion: vueTscRequire('@vue/language-core/package.json').version as string,
+			source: vueTscDir,
+		}
+	} catch {
+		const selfRequire = createRequire(import.meta.url)
+		return {
+			core: selfRequire('@vue/language-core') as typeof import('@vue/language-core'),
+			ts: selfRequire('typescript') as typeof import('typescript'),
+			coreVersion: selfRequire('@vue/language-core/package.json').version as string,
+			source: 'bundled',
+		}
+	}
+}
 
-const plugins = (await Promise.all([
-	PluginVueTsx,
-	PluginFileVue,
-	PluginVueScriptJs,
-	PluginVueTemplateHtml,
-])).flatMap(({ default: ctor }) => ctor({
-	modules: {
-		typescript: ts,
-		"@vue/compiler-dom": compilerDom
-	},
-	compilerOptions: {},
-	vueCompilerOptions: vueOptions,
-}))
+const { core, ts, coreVersion, source } = loadVolar()
+
+// The tsconfig being checked: GOLAR_VUE_TSCONFIG, else ./tsconfig.json.
+const configPath = path.resolve(process.env.GOLAR_VUE_TSCONFIG ?? 'tsconfig.json')
+const parsed = ts.sys.fileExists(configPath)
+	? core.createParsedCommandLine(ts, ts.sys, configPath)
+	: core.createParsedCommandLineByJson(ts, ts.sys, process.cwd(), {})
+
+if (process.env.GOLAR_VUE_DEBUG) {
+	console.error(`[golar-vue] language-core from ${source}, tsconfig ${configPath}`)
+}
+
+const vueLanguagePlugin = core.createVueLanguagePlugin(ts, parsed.options, parsed.vueOptions, (id: string) => id)
+
+// Everything the generated code depends on besides the .vue file itself.
+function cacheIdentity(): string | undefined {
+	try {
+		return JSON.stringify([coreVersion, ts.version, parsed.vueOptions, parsed.options])
+	} catch {
+		return undefined
+	}
+}
+const identity = process.env.GOLAR_VUE_CACHE === '0' ? undefined : cacheIdentity()
 
 createVolarPlugin({
 	filename: import.meta.filename,
-	languagePlugins: [
-		{
-			getLanguageId(scriptId) {
-			  return scriptId.endsWith('.vue') ? 'vue' : undefined
-			},
-			createVirtualCode(scriptId, languageId, snapshot) {
-				return new VueVirtualCode(
-					scriptId,
-					languageId,
-					snapshot,
-					vueOptions,
-					plugins,
-					ts,
-				);
-			},
-			typescript: {
-				extraFileExtensions: [{
-					extension: 'vue',
-					isMixedContent: true,
-					scriptKind: 7 satisfies import('typescript').ScriptKind.Deferred,
-				}],
-				getServiceScript(root) {
-					for (const code of forEachEmbeddedCode(root)) {
-						if (/script_(js|jsx|ts|tsx)/.test(code.id)) {
-							const lang = code.id.slice('script_'.length);
-							return {
-								code,
-								extension: '.' + lang,
-								scriptKind: lang === 'js'
-									? ts.ScriptKind.JS
-									: lang === 'jsx'
-									? ts.ScriptKind.JSX
-									: lang === 'tsx'
-									? ts.ScriptKind.TSX
-									: ts.ScriptKind.TS,
-							};
-						}
-					}
-					return undefined
-				}
-			}
-		},
-	]
+	languagePlugins: [vueLanguagePlugin],
+	cache: identity === undefined ? undefined : {
+		dir: process.env.GOLAR_VUE_CACHE_DIR ?? path.join(os.homedir(), '.cache', 'vue-go-tsc', 'volar-codegen'),
+		key: identity,
+	},
 })

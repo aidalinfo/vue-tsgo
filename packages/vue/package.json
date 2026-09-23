@@ -5,7 +5,7 @@
 	"dependencies": {
 		"@golar/volar": "workspace:",
 		"@vue/compiler-dom": "^3.5.27",
-		"@vue/language-core": "^3.2.2",
+		"@vue/language-core": "3.3.4",
 		"typescript": "^5.9.3"
 	},
 	"devDependencies": {

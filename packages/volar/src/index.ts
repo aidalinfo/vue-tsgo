@@ -3,12 +3,62 @@
 import { createPlugin, type IgnoreDirectiveMapping, type Mapping, type ScriptKind } from '@golar/plugin'
 import type { LanguagePlugin } from '@volar/language-core'
 import type ts from 'typescript'
+import { createHash } from 'node:crypto'
+import fs from 'node:fs'
+import path from 'node:path'
 
 type Promisable<T> = T | Promise<T>
+
+// Every diagnostic code a `@vue/language-core` `verification.shouldReport`
+// filters (2.2.x and 3.x): unknown props (2353/2561), unused locals (6133),
+// unknown ctx properties (2339/2551). Bit i of a mapping's suppression mask
+// stands for SHOULD_REPORT_CODES[i]; the Go host uses the same table.
+const SHOULD_REPORT_CODES = [2339, 2353, 2551, 2561, 6133]
+
+function suppressionMask(verification: unknown): number {
+	if (typeof verification !== 'object' || verification === null) {
+		return 0
+	}
+	const shouldReport = (verification as { shouldReport?: (source: string | undefined, code: string | number) => boolean }).shouldReport
+	if (typeof shouldReport !== 'function') {
+		return 0
+	}
+	let mask = 0
+	for (const [bit, code] of SHOULD_REPORT_CODES.entries()) {
+		if (!shouldReport(undefined, code)) {
+			mask |= 1 << bit
+		}
+	}
+	return mask
+}
 
 export type CreateVolarPluginOptions = {
 	filename: string
 	languagePlugins: LanguagePlugin<string>[]
+	// On-disk cache of generated service code. `key` must identify everything
+	// the codegen output depends on besides the file (Volar version, options).
+	cache?: { dir: string, key: string } | undefined
+}
+
+type ServiceCodeResult = Awaited<ReturnType<Parameters<typeof createPlugin>[0]['createServiceCode']>>
+
+function readCache(file: string): ServiceCodeResult | undefined {
+	try {
+		return JSON.parse(fs.readFileSync(file, 'utf8'))
+	} catch {
+		return undefined
+	}
+}
+
+function writeCache(file: string, result: ServiceCodeResult) {
+	try {
+		fs.mkdirSync(path.dirname(file), { recursive: true })
+		const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`
+		fs.writeFileSync(tmp, JSON.stringify(result))
+		fs.renameSync(tmp, file)
+	} catch {
+		// the cache is an optimization only
+	}
 }
 
 export function createVolarPlugin(opts: CreateVolarPluginOptions) {
@@ -16,6 +66,24 @@ export function createVolarPlugin(opts: CreateVolarPluginOptions) {
 		filename: opts.filename,
 		extraExtensions: opts.languagePlugins.flatMap(p => p.typescript?.extraFileExtensions?.map(e => `.${e.extension}`) ?? []),
 		async createServiceCode(fileName, sourceText) {
+			const cacheFile = opts.cache
+				? path.join(opts.cache.dir, createHash('sha256').update(opts.cache.key).update('\0').update(fileName).update('\0').update(sourceText).digest('hex') + '.json')
+				: undefined
+			if (cacheFile) {
+				const cached = readCache(cacheFile)
+				if (cached) {
+					return cached
+				}
+			}
+			const result = generate(fileName, sourceText)
+			if (cacheFile) {
+				writeCache(cacheFile, result)
+			}
+			return result
+		},
+	})
+
+	function generate(fileName: string, sourceText: string): ServiceCodeResult {
 			for (const plugin of opts.languagePlugins) {
 				if (plugin.createVirtualCode == null) {
 					continue
@@ -78,8 +146,14 @@ export function createVolarPlugin(opts: CreateVolarPluginOptions) {
 				}
 
 				const serviceCovered: [number, number][] = []
+				// One suppression mask per emitted mapping, in the same order.
+				const mappingSuppressedCodes: number[] = []
 				const mappings = verificationMappings
 					.flatMap((m): Mapping[] => {
+						const mask = suppressionMask(m.data.verification)
+						for (let i = 0; i < m.sourceOffsets.length; i++) {
+							mappingSuppressedCodes.push(mask)
+						}
 						return m.sourceOffsets.map((sourceOffset, i) => {
 							const generatedOffset = m.generatedOffsets[i]!
 							const sourceLength = m.lengths[i]!
@@ -130,11 +204,11 @@ export function createVolarPlugin(opts: CreateVolarPluginOptions) {
 					scriptKind: tsScriptKindToGolar(serviceScript?.scriptKind),
 					mappings,
 					ignoreMappings,
+					mappingSuppressedCodes,
 				}
 			}
 			throw new Error('Unknown language')
-		},
-	})
+	}
 }
 
 function tsScriptKindToGolar(scriptKind: ts.ScriptKind | undefined): ScriptKind {

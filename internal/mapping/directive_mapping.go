@@ -94,6 +94,39 @@ type PropNameMapping struct {
 	ServiceLength uint32
 }
 
+// ShouldReportCodes are the diagnostic codes a Volar mapping can filter with
+// `verification.shouldReport`. Bit i of a mapping suppression mask stands for
+// ShouldReportCodes[i] (same table as packages/volar).
+var ShouldReportCodes = [...]int32{2339, 2353, 2551, 2561, 6133}
+
+// IsReportedThroughMappings mirrors how Volar reports a diagnostic whose code a
+// mapping may filter: both its start and its end must map through a mapping
+// that does not suppress the code (suppressed[i] is the mask of mappings[i]).
+// Diagnostics with other codes, or without masks, are unaffected.
+func IsReportedThroughMappings(mappings []Mapping, suppressed []uint8, code int32, serviceRange core.TextRange) bool {
+	if len(suppressed) != len(mappings) {
+		return true
+	}
+	bit := -1
+	for i, c := range ShouldReportCodes {
+		if c == code {
+			bit = i
+		}
+	}
+	if bit < 0 {
+		return true
+	}
+	allowedAt := func(pos int) bool {
+		for i, m := range mappings {
+			if suppressed[i]&(1<<bit) == 0 && int(m.ServiceOffset) <= pos && pos <= int(m.ServiceOffset+m.ServiceLength) {
+				return true
+			}
+		}
+		return false
+	}
+	return allowedAt(serviceRange.Pos()) && allowedAt(serviceRange.End())
+}
+
 // IsUnknownPropDiagnostic reports whether a diagnostic with `code` at
 // `serviceRange` is an unknown-prop error on one of `props`.
 func IsUnknownPropDiagnostic(props []PropNameMapping, code int32, serviceRange core.TextRange) bool {

@@ -114,6 +114,9 @@ type CreateServiceCodeResponse struct {
 	ScriptKind     core.ScriptKind
 	Mappings       []mapping.Mapping
 	IgnoreMappings []mapping.IgnoreDirectiveMapping
+	// Optional trailing section (absent from older plugins): one bitmask of
+	// suppressed diagnostic codes per mapping, see mapping.ShouldReportCodes.
+	MappingSuppressedCodes []uint8
 }
 
 func (p *Plugin) CreateServiceCode(fileName string, sourceText string) <-chan CreateServiceCodeResponse {
@@ -168,6 +171,13 @@ func (p *Plugin) CreateServiceCode(fileName string, sourceText string) <-chan Cr
 			offset += 4
 			response.IgnoreMappings = make([]mapping.IgnoreDirectiveMapping, ignoreMappingsCount)
 			copy(response.IgnoreMappings, unsafe.Slice((*mapping.IgnoreDirectiveMapping)(unsafe.Pointer(unsafe.SliceData(payload[offset:offset+ignoreMappingsByteLen]))), ignoreMappingsCount))
+			offset += ignoreMappingsByteLen
+
+			if int(offset)+4 <= len(payload) {
+				count := binary.LittleEndian.Uint32(payload[offset:])
+				offset += 4
+				response.MappingSuppressedCodes = append([]uint8(nil), payload[offset:offset+count]...)
+			}
 		}
 
 		ch <- response
