@@ -245,7 +245,7 @@ func findVueFile(t *testing.T, dir string) string {
 
 func getGolarOutput(t *testing.T, content string) string {
 	ast, _ := vue_parser.Parse(content)
-	serviceCode, _, _, _, _ := vue_codegen.Codegen(content, ast, vue_codegen.VueOptions{})
+	serviceCode, _, _, _, _, _ := vue_codegen.Codegen(content, ast, vue_codegen.VueOptions{})
 	return serviceCode
 }
 

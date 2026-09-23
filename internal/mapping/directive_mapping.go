@@ -83,3 +83,27 @@ func (d *DirectiveMap) CollectUnused() []ExpectErrorDirectiveMapping {
 
 	return res
 }
+
+// PropNameMapping is the service range of a template prop name (the property
+// key in the generated props object literal). "Unknown property" diagnostics
+// on it (TS2353, TS2561) are not reported: unknown props are valid in Vue
+// templates (they fall through as attrs). Mirrors Volar's
+// doNotReportTs2353AndTs2561 code feature, used when checkUnknownProps is off.
+type PropNameMapping struct {
+	ServiceOffset uint32
+	ServiceLength uint32
+}
+
+// IsUnknownPropDiagnostic reports whether a diagnostic with `code` at
+// `serviceRange` is an unknown-prop error on one of `props`.
+func IsUnknownPropDiagnostic(props []PropNameMapping, code int32, serviceRange core.TextRange) bool {
+	if code != 2353 && code != 2561 {
+		return false
+	}
+	for _, p := range props {
+		if serviceRange.ContainedBy(core.NewTextRange(int(p.ServiceOffset), int(p.ServiceOffset+p.ServiceLength))) {
+			return true
+		}
+	}
+	return false
+}

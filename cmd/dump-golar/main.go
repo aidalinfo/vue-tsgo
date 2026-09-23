@@ -15,6 +15,6 @@ func main() {
 	}
 	content := string(b)
 	ast, _ := vue_parser.Parse(content)
-	serviceCode, _, _, _, _ := vue_codegen.Codegen(content, ast, vue_codegen.VueOptions{})
+	serviceCode, _, _, _, _, _ := vue_codegen.Codegen(content, ast, vue_codegen.VueOptions{})
 	fmt.Print(serviceCode)
 }

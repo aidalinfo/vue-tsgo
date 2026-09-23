@@ -289,9 +289,7 @@ func (p *Parser) ondirmodifier(start int, end int) {
 		// 	setLocEnd(arg.loc, end)
 		// }
 	} else {
-		// TODO:
-		// exp := createSimpleExpression(mod, true, getLoc(start, end))
-		// ;(currentProp as DirectiveNode).modifiers.push(exp)
+		prop.Modifiers = append(prop.Modifiers, vue_ast.DirectiveModifier{Name: mod, Loc: core.NewTextRange(start, end)})
 	}
 }
 
