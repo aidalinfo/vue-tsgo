@@ -6,6 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
+import { isMainThread } from 'node:worker_threads'
 
 // Volar codegen mode: the .vue virtual code comes from `@vue/language-core`,
 // the same codegen vue-tsc runs, so vue-go-tsc checks exactly what vue-tsc
@@ -61,20 +62,39 @@ function loadVolar(): { core: LanguageCore, ts: TypeScript, coreVersion: string,
 
 const { core, ts, coreVersion, source } = loadVolar()
 
+// This module runs in the main thread and again in every codegen worker, each
+// reading the tsconfig. Only the main thread may print what that produces
+// (e.g. vue-tsc's "[Vue] Resolve plugin path failed" warnings), so it shows
+// once, like with vue-tsc, instead of once per worker.
+function quietInWorkers<T>(fn: () => T): T {
+	if (isMainThread) {
+		return fn()
+	}
+	const saved = { log: console.log, info: console.info, warn: console.warn, error: console.error }
+	console.log = console.info = console.warn = console.error = () => {}
+	try {
+		return fn()
+	} finally {
+		Object.assign(console, saved)
+	}
+}
+
 let parsed: ReturnType<LanguageCore['createParsedCommandLine']>
 try {
-	parsed = ts.sys.fileExists(configPath)
-		? core.createParsedCommandLine(ts, ts.sys, configPath)
-		: core.createParsedCommandLineByJson(ts, ts.sys, projectDir, {})
+	parsed = quietInWorkers(() =>
+		ts.sys.fileExists(configPath)
+			? core.createParsedCommandLine(ts, ts.sys, configPath)
+			: core.createParsedCommandLineByJson(ts, ts.sys, projectDir, {})
+	)
 } catch (err) {
 	fail(`cannot read ${configPath}: ${(err as Error).message}`)
 }
 
-if (process.env.GOLAR_VUE_DEBUG) {
+if (process.env.GOLAR_VUE_DEBUG && isMainThread) {
 	console.error(`[vue-go-tsc] Volar codegen: @vue/language-core ${coreVersion} (${source}), TypeScript ${ts.version}, tsconfig ${configPath}`)
 }
 
-const vueLanguagePlugin = core.createVueLanguagePlugin(ts, parsed.options, parsed.vueOptions, (id: string) => id)
+const vueLanguagePlugin = quietInWorkers(() => core.createVueLanguagePlugin(ts, parsed.options, parsed.vueOptions, (id: string) => id))
 
 // Everything the generated code depends on besides the .vue file itself.
 function cacheIdentity(): string | undefined {
