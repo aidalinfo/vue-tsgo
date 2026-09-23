@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-09-23
+
+### 🐛 Bug Fixes
+
+- **Codegen: exported types in a generic `<script setup>`** — leading
+  `export interface` / `export type` declarations were left inside the
+  generic setup function, where export modifiers are invalid: TS1184
+  "Modifiers cannot appear here", cascading errors on every use, and the types
+  could not be imported by consumers (TS2614). They are now hoisted above the
+  generic wrapper with the imports, like Volar's import section (re-exports,
+  `import x = require()` and empty statements too).
+- **Codegen: `defineProps<T>()` without a variable in a generic component** —
+  its props were typed as `typeof defineProps<T>()`, which stays unresolved
+  when `T` depends on the `generic` parameter, so every template access to a
+  prop failed (TS2339/TS2551) and parents inferred wrong generic arguments
+  (spurious TS2322). The type argument is now extracted into
+  `type __VLS_Props = T` bound to `__VLS_props`, as Volar does.
+- **Codegen: component `v-model` modifiers** — `v-model.number` (and any
+  `v-model:<prop>.<mod>`) now passes `modelModifiers` / `<prop>Modifiers` to
+  the component, as Volar does. Components that type their model from the
+  modifiers (Nuxt UI's `UInput`: `ApplyModifiers<T, Mod>`) no longer reject a
+  number (spurious TS2322). Directive modifiers are now kept in the Vue AST.
+- **Diagnostics: unknown props on components are not reported** — unknown
+  props are valid in Vue templates (they fall through as attrs), but on
+  generic components the generated props object still raised TS2353/TS2561.
+  These two codes are now ignored on template prop names, matching Volar's
+  default (`checkUnknownProps: false`). Type errors on known props are still
+  reported.
+
 ## [0.2.3] - 2026-09-23
 
 ### 🐛 Bug Fixes

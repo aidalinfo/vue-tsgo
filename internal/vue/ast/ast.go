@@ -157,7 +157,15 @@ type DirectiveNode struct {
 	ForParseResult *ForParseResult
 	IsStatic       bool
 	Arg            string // TODO: support dynamic event names like @[event]="" *SimpleExpressionNode
-	// modifiers: SimpleExpressionNode[]
+	// Modifiers in source order, e.g. `number` and `trim` for `v-model.number.trim`.
+	Modifiers []DirectiveModifier
+}
+
+// DirectiveModifier is one `.modifier` of a directive.
+type DirectiveModifier struct {
+	Name string
+	// Range of the modifier name, without the leading dot.
+	Loc core.TextRange
 }
 
 func NewDirectiveNode(name, rawName string, nameLoc, loc core.TextRange) *DirectiveNode {

@@ -50,7 +50,7 @@ var TemplateHelpers string
 //go:embed types/props-fallback.d.ts
 var PropsFallback string
 
-func Codegen(sourceText string, root *vue_ast.RootNode, options VueOptions) (string, []mapping.Mapping, []mapping.IgnoreDirectiveMapping, []mapping.ExpectErrorDirectiveMapping, []*ast.Diagnostic) {
+func Codegen(sourceText string, root *vue_ast.RootNode, options VueOptions) (string, []mapping.Mapping, []mapping.IgnoreDirectiveMapping, []mapping.ExpectErrorDirectiveMapping, []mapping.PropNameMapping, []*ast.Diagnostic) {
 	ctx := newCodegenCtx(root, sourceText, options)
 	ctx.serviceText.WriteString(globalTypesReference(options.HelperDir))
 
@@ -144,7 +144,7 @@ RootChild:
 	// Line correspondence is handled through source mappings, not space padding.
 	generateScript(&ctx, scriptSetupEl, scriptEl, templateEl)
 
-	return ctx.serviceText.String(), ctx.mappings, ctx.ignoreDirectives, ctx.expectErrorDirectives, ctx.diagnostics
+	return ctx.serviceText.String(), ctx.mappings, ctx.ignoreDirectives, ctx.expectErrorDirectives, ctx.propNames, ctx.diagnostics
 }
 
 type codegenCtx struct {
@@ -154,6 +154,7 @@ type codegenCtx struct {
 	mappings                []mapping.Mapping
 	ignoreDirectives        []mapping.IgnoreDirectiveMapping
 	expectErrorDirectives   []mapping.ExpectErrorDirectiveMapping
+	propNames               []mapping.PropNameMapping
 	diagnostics             []*ast.Diagnostic
 	internalVariableCounter int
 	options                 VueOptions
@@ -265,6 +266,7 @@ type templateOutput struct {
 	mappings         []mapping.Mapping
 	ignoreDirectives []mapping.IgnoreDirectiveMapping
 	expectErrorDirs  []mapping.ExpectErrorDirectiveMapping
+	propNames        []mapping.PropNameMapping
 	diagnostics      []*ast.Diagnostic
 	usedTemplateVars []string
 	allAccessedVars  []string
@@ -296,6 +298,7 @@ func generateTemplateBuffered(base *codegenCtx, el *vue_ast.ElementNode) templat
 		mappings:         tmpCtx.mappings,
 		ignoreDirectives: tmpCtx.ignoreDirectives,
 		expectErrorDirs:  tmpCtx.expectErrorDirectives,
+		propNames:        tmpCtx.propNames,
 		diagnostics:      tmpCtx.diagnostics,
 		usedTemplateVars: tmpCtx.usedTemplateVars,
 		allAccessedVars:  tmpCtx.allAccessedVars,
@@ -330,6 +333,12 @@ func (c *codegenCtx) mergeTemplateOutput(t templateOutput) {
 			ServiceOffset: d.ServiceOffset + offset,
 			SourceLength:  d.SourceLength,
 			ServiceLength: d.ServiceLength,
+		})
+	}
+	for _, p := range t.propNames {
+		c.propNames = append(c.propNames, mapping.PropNameMapping{
+			ServiceOffset: p.ServiceOffset + offset,
+			ServiceLength: p.ServiceLength,
 		})
 	}
 	c.diagnostics = append(c.diagnostics, t.diagnostics...)
@@ -381,6 +390,15 @@ func (c *codegenCtx) mapRange(sourceStart, sourceEnd, serviceStart, serviceEnd i
 		SourceOffset:  uint32(sourceEnd),
 		ServiceOffset: uint32(serviceEnd),
 		SourceLength:  uint32(0),
+	})
+}
+
+// mapPropName records the service range of a template prop name, on which
+// unknown-prop diagnostics are not reported (see mapping.PropNameMapping).
+func (c *codegenCtx) mapPropName(serviceStart, serviceEnd int) {
+	c.propNames = append(c.propNames, mapping.PropNameMapping{
+		ServiceOffset: uint32(serviceStart),
+		ServiceLength: uint32(serviceEnd - serviceStart),
 	})
 }
 

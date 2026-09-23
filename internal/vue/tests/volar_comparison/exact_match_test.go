@@ -107,7 +107,7 @@ func requireVolarSetup(t *testing.T, projectRoot string) {
 func getGolarCodegen(t *testing.T, content string) string {
 	t.Helper()
 	ast, _ := vue_parser.Parse(content)
-	serviceCode, _, _, _, _ := vue_codegen.Codegen(content, ast, vue_codegen.VueOptions{})
+	serviceCode, _, _, _, _, _ := vue_codegen.Codegen(content, ast, vue_codegen.VueOptions{})
 	return normalizeReferenceTypes(serviceCode)
 }
 

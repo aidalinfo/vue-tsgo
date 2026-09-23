@@ -47,6 +47,7 @@ type languageData struct {
 	sourceMap             *mapping.SourceMap
 	ignoreDirectives      []mapping.IgnoreDirectiveMapping
 	expectErrorDirectives []mapping.ExpectErrorDirectiveMapping
+	propNames             []mapping.PropNameMapping
 }
 
 func (h *compilerHostProxy) GetSourceFile(opts ast.SourceFileParseOptions) *ast.SourceFile {
@@ -298,6 +299,7 @@ func parseFile(fs vfs.FS, opts ast.SourceFileParseOptions, sourceText string, sc
 	var mappings []mapping.Mapping
 	var ignoreDirectives []mapping.IgnoreDirectiveMapping
 	var expectErrorDirectives []mapping.ExpectErrorDirectiveMapping
+	var propNames []mapping.PropNameMapping
 	var fileDiagnostics []*ast.Diagnostic
 	if len(parsingErrors) > 0 {
 		// TODO: error recovery?
@@ -323,7 +325,7 @@ func parseFile(fs vfs.FS, opts ast.SourceFileParseOptions, sourceText string, sc
 		if vueDir, ok := resolveVueDir(fs, opts.FileName); ok {
 			options.HelperDir = tspath.CombinePaths(vueDir, golarHelperSubdir)
 		}
-		serviceText, mappings, ignoreDirectives, expectErrorDirectives, fileDiagnostics = vue_codegen.Codegen(sourceText, vueAst, options)
+		serviceText, mappings, ignoreDirectives, expectErrorDirectives, propNames, fileDiagnostics = vue_codegen.Codegen(sourceText, vueAst, options)
 		if sub := os.Getenv("TSGO_DUMP_VUE_TS"); sub != "" && strings.Contains(opts.FileName, sub) {
 			_ = os.WriteFile(opts.FileName+".golar.tsx", []byte(serviceText), 0o644)
 		}
@@ -367,6 +369,7 @@ func parseFile(fs vfs.FS, opts ast.SourceFileParseOptions, sourceText string, sc
 		sourceMap:             mapping.NewSourceMap(mappings),
 		ignoreDirectives:      ignoreDirectives,
 		expectErrorDirectives: expectErrorDirectives,
+		propNames:             propNames,
 	}
 
 	return file
@@ -483,6 +486,9 @@ func wrapDiagnostics(file *ast.SourceFile, diagnostics []*ast.Diagnostic, collec
 	directiveMap := mapping.NewDirectiveMap(langData.ignoreDirectives, langData.expectErrorDirectives)
 	for _, diag := range diagnostics {
 		if directiveMap.IsServiceRangeIgnored(diag.Loc()) {
+			continue
+		}
+		if mapping.IsUnknownPropDiagnostic(langData.propNames, diag.Code(), diag.Loc()) {
 			continue
 		}
 		if adjusted := adjustDiagnostic(file, diag); adjusted != nil {

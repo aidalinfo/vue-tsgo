@@ -1505,6 +1505,7 @@ func (c *templateCodegenCtx) generateSingleProp(prop *vue_ast.Node, elem *vue_as
 		}
 		propNameEnd := c.serviceText.Len()
 		c.mapRange(attr.Loc.Pos(), attr.Loc.Pos()+len(attr.Name), propNameStart, propNameEnd)
+		c.mapPropName(propNameStart, propNameEnd)
 		if attr.Value == nil {
 			c.serviceText.WriteString(": true,\n")
 		} else {
@@ -1591,6 +1592,7 @@ func (c *templateCodegenCtx) generateSingleProp(prop *vue_ast.Node, elem *vue_as
 		propNameEnd := c.serviceText.Len()
 		// TODO: more accurate range
 		c.mapRange(dir.Loc.Pos(), dir.Loc.End(), propNameStart, propNameEnd)
+		c.mapPropName(propNameStart, propNameEnd)
 
 		c.serviceText.WriteString(": (")
 		if dir.Expression == nil {
@@ -1602,6 +1604,37 @@ func (c *templateCodegenCtx) generateSingleProp(prop *vue_ast.Node, elem *vue_as
 			c.mapExpressionInNonBindingPosition(dir.Expression)
 		}
 		c.serviceText.WriteString("),\n")
+
+		// Component v-model modifiers are passed as the `<model>Modifiers` prop,
+		// e.g. `modelModifiers: { number: true, },` for `v-model.number`. Components
+		// that type their model from the modifiers (Nuxt UI's UInput:
+		// ApplyModifiers<T, Mod>) otherwise infer the unmodified (string) type.
+		// Matches Volar's generateModifiers (template/elementProps.ts).
+		if isModel && isComponent && (dir.Arg == "" || dir.IsStatic) && len(dir.Modifiers) > 0 {
+			keyStart := c.serviceText.Len()
+			if dir.Arg == "" {
+				c.serviceText.WriteString("modelModifiers")
+			} else {
+				camelize(dir.Arg, &c.serviceText)
+				c.serviceText.WriteString("Modifiers")
+			}
+			// The key maps to the `.mod1.mod2` source range (dots included).
+			c.mapRange(dir.Modifiers[0].Loc.Pos()-1, dir.Modifiers[len(dir.Modifiers)-1].Loc.End(), keyStart, c.serviceText.Len())
+			c.serviceText.WriteString(": { ")
+			for _, mod := range dir.Modifiers {
+				nameStart := c.serviceText.Len()
+				if needsQuoting(mod.Name) {
+					c.serviceText.WriteString("'")
+					c.serviceText.WriteString(mod.Name)
+					c.serviceText.WriteString("'")
+				} else {
+					c.serviceText.WriteString(mod.Name)
+				}
+				c.mapRange(mod.Loc.Pos(), mod.Loc.End(), nameStart, c.serviceText.Len())
+				c.serviceText.WriteString(": true, ")
+			}
+			c.serviceText.WriteString("},\n")
+		}
 	}
 }
 

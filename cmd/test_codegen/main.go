@@ -30,7 +30,7 @@ func main() {
 
 	sourceText := string(content)
 	ast, _ := vue_parser.Parse(sourceText)
-	serviceText, mappings, _, _, _ := vue_codegen.Codegen(sourceText, ast, vue_codegen.VueOptions{})
+	serviceText, mappings, _, _, _, _ := vue_codegen.Codegen(sourceText, ast, vue_codegen.VueOptions{})
 
 	switch mode {
 	case "--service":
