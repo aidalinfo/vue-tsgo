@@ -29,6 +29,9 @@ function parseArgs(argv) {
     console.error('usage: parity-check.mjs --tsgo <tsgo> --plugin <plugin.mjs> <project dir>...')
     process.exit(2)
   }
+  // Commands run inside each project directory: make paths absolute first.
+  opts.tsgo = path.resolve(opts.tsgo)
+  opts.plugin = path.resolve(opts.plugin)
   return opts
 }
 
