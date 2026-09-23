@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-23
+
+### 🐛 Bug Fixes
+
+- **Volar codegen: warnings printed once** — every codegen worker re-read the
+  tsconfig, so vue-tsc warnings such as `[Vue] Resolve plugin path failed`
+  (and the `GOLAR_VUE_DEBUG` line) were printed once per worker (5× by
+  default). Only the main thread prints them now, like vue-tsc.
+
 ## [0.3.0] - 2026-09-23
 
 ### ✨ Features
