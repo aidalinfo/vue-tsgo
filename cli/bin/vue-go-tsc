@@ -1,17 +1,93 @@
 #!/usr/bin/env node
 
-const { spawnSync } = require('child_process');
+const { spawn } = require('child_process');
+const fs = require('fs');
 const { join } = require('path');
 const os = require('os');
 
 const GiB = 1024 ** 3;
 
-// Fraction of total RAM used as the default soft Go heap ceiling. Half of RAM
-// leaves ample headroom for the OS, Node, and any concurrent CI jobs on the
-// same runner, and is reproducible across runs (unlike instantaneous free RAM).
+// Fraction of the CPU cores a lone tsgo run may use. The Go runtime defaults
+// GOMAXPROCS to every core, and tsgo parses/binds with one goroutine per file,
+// so an unbounded run pins the whole machine at 100% CPU. Half of the cores
+// keeps a lone typecheck fast while leaving the machine responsive.
+const DEFAULT_CPU_FRACTION = 0.5;
+
+// Fraction of total RAM used as the soft Go heap ceiling of a lone run. Half
+// of RAM leaves ample headroom for the OS, Node, and other jobs.
 const DEFAULT_MEM_FRACTION = 0.5;
 
-// Compute a soft Go heap ceiling (in bytes) for tsgo based on total RAM.
+// Fraction of total RAM shared by all concurrent runs. GOMEMLIMIT is
+// per-process: without sharing, N concurrent runs would each claim 50% of RAM,
+// overcommit it, and spend their time in the GC as the machine fills up.
+const SHARED_MEM_FRACTION = 0.75;
+
+// Fraction of the currently available RAM a run may claim. The rest is left as
+// headroom for whatever else is running and may still grow.
+const AVAILABLE_MEM_FRACTION = 0.8;
+
+// A busy machine never squeezes a run below this fraction of the cores: the
+// idle measurement is a short snapshot, and a momentary spike elsewhere must
+// not cripple a typecheck for its whole duration. The kernel scheduler shares
+// the cores fairly beyond that.
+const MIN_CPU_FRACTION = 0.125;
+
+// How long the launcher samples CPU activity before starting tsgo.
+const CPU_SAMPLE_MS = 200;
+
+// Never set a heap ceiling below this: a limit under a project's live heap
+// makes the Go GC run continuously instead of making progress.
+const MIN_MEM_LIMIT = 1 * GiB;
+
+// Registry entries older than this are treated as stale even if their PID is
+// alive again (PID reuse after a crash that skipped cleanup).
+const STALE_ENTRY_MS = 24 * 60 * 60 * 1000;
+
+const REGISTRY_DIR = join(os.tmpdir(), 'vue-go-tsc-instances');
+
+// Compute GOMAXPROCS for one of `instances` concurrent runs on a machine with
+// `cpus` cores of which `idleCpus` are currently idle.
+//
+// The run takes the smallest of: half of the cores, its fair share when
+// several runs are active, and the cores other work leaves idle. It is never
+// squeezed below MIN_CPU_FRACTION of the cores (and at least one core).
+// `idleCpus` is optional: when unknown, only the first two bounds apply.
+//
+// Returns null when the core count is unknown (leave Go's default).
+function computeGoMaxProcs(cpus, instances = 1, idleCpus) {
+  if (!Number.isFinite(cpus) || cpus <= 0) {
+    return null;
+  }
+  const n = Math.max(1, Math.floor(instances) || 1);
+  const cap = Math.max(1, Math.min(Math.floor(cpus * DEFAULT_CPU_FRACTION), Math.floor(cpus / n)));
+  if (!Number.isFinite(idleCpus) || idleCpus < 0) {
+    return cap;
+  }
+  const floor = Math.min(cap, Math.max(1, Math.floor(cpus * MIN_CPU_FRACTION)));
+  return Math.max(floor, Math.min(cap, Math.floor(idleCpus)));
+}
+
+// Number of idle cores between two `os.cpus()` snapshots, scaled to the
+// `cpus` usable by this process. Returns undefined when nothing was measured.
+function measureIdleCpus(before, after, cpus) {
+  let idle = 0;
+  let total = 0;
+  for (let i = 0; i < Math.min(before.length, after.length); i++) {
+    const a = before[i].times;
+    const b = after[i].times;
+    const idleDelta = b.idle - a.idle;
+    const totalDelta = b.user + b.nice + b.sys + b.idle + b.irq - (a.user + a.nice + a.sys + a.idle + a.irq);
+    idle += Math.max(0, idleDelta);
+    total += Math.max(0, totalDelta);
+  }
+  if (total <= 0) {
+    return undefined;
+  }
+  return (idle / total) * cpus;
+}
+
+// Compute a soft Go heap ceiling (in bytes) for one of `instances` concurrent
+// runs based on total RAM.
 //
 // tsgo is the typescript-go native binary; its Go runtime defaults to GOGC=100,
 // which lets the heap roughly double before the GC runs. On a large Nuxt
@@ -22,20 +98,39 @@ const DEFAULT_MEM_FRACTION = 0.5;
 // instead of a hard kill, and it can be raised via the GOMEMLIMIT env var when
 // a project's live heap genuinely needs more.
 //
+// A lone run gets at most half of RAM; concurrent runs split a shared pool so
+// their combined ceilings stay below physical RAM. The run also never claims
+// more than AVAILABLE_MEM_FRACTION of the RAM currently available
+// (`availableBytes`, optional), so memory held by other programs is left
+// alone. The fair-share bound still matters on top of that: other runs that
+// just started have not grown their heap yet.
+//
 // Returns null when total RAM is unknown/implausible (leave Go's default).
-function computeGoMemLimit(totalBytes) {
+function computeGoMemLimit(totalBytes, instances = 1, availableBytes) {
   if (!Number.isFinite(totalBytes) || totalBytes <= 0) {
     return null;
   }
-  return Math.floor(totalBytes * DEFAULT_MEM_FRACTION);
+  const n = Math.max(1, Math.floor(instances) || 1);
+  let share = Math.min(totalBytes * DEFAULT_MEM_FRACTION, (totalBytes * SHARED_MEM_FRACTION) / n);
+  if (Number.isFinite(availableBytes) && availableBytes >= 0) {
+    share = Math.min(share, availableBytes * AVAILABLE_MEM_FRACTION);
+  }
+  return Math.floor(Math.max(Math.min(MIN_MEM_LIMIT, totalBytes * DEFAULT_MEM_FRACTION), share));
 }
 
-// Return a copy of `env` with GOMEMLIMIT defaulted from total RAM. An explicit
-// GOMEMLIMIT is always respected (never overridden).
-function resolveEnv(env, totalBytes) {
+// Return a copy of `env` with GOMAXPROCS and GOMEMLIMIT defaulted from the
+// machine resources, what is currently free, and the number of concurrent
+// runs. Explicit values are always respected (never overridden).
+function resolveEnv(env, { cpus, totalMem, instances = 1, idleCpus, availableMem }) {
   const out = { ...env };
+  if (!out.GOMAXPROCS) {
+    const procs = computeGoMaxProcs(cpus, instances, idleCpus);
+    if (procs) {
+      out.GOMAXPROCS = String(procs);
+    }
+  }
   if (!out.GOMEMLIMIT) {
-    const limit = computeGoMemLimit(totalBytes);
+    const limit = computeGoMemLimit(totalMem, instances, availableMem);
     if (limit) {
       // A bare integer is interpreted by the Go runtime as a byte count.
       out.GOMEMLIMIT = String(limit);
@@ -44,20 +139,158 @@ function resolveEnv(env, totalBytes) {
   return out;
 }
 
-if (require.main === module) {
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    // EPERM: the process exists but belongs to another user.
+    return err.code === 'EPERM';
+  }
+}
+
+// Register this run in the shared instance registry and return the number of
+// live runs (including this one) plus a function that unregisters it.
+//
+// Each run owns one `<pid>` file in `dir`. Entries whose process is gone (a
+// run killed before it could clean up) are pruned on the way. Registering
+// before counting means two runs starting at the same moment see each other.
+// Any filesystem failure degrades to "alone" rather than blocking the check.
+function registerInstance(dir = REGISTRY_DIR, pid = process.pid, now = Date.now()) {
+  const self = join(dir, String(pid));
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(self, String(now));
+  } catch {
+    return { instances: 1, unregister: () => {} };
+  }
+
+  let instances = 1;
+  try {
+    for (const name of fs.readdirSync(dir)) {
+      const other = Number(name);
+      if (!Number.isInteger(other) || other <= 0 || other === pid) {
+        continue;
+      }
+      const entry = join(dir, name);
+      let startedAt = NaN;
+      try {
+        startedAt = Number(fs.readFileSync(entry, 'utf8'));
+      } catch {
+        continue;
+      }
+      if (isProcessAlive(other) && now - startedAt < STALE_ENTRY_MS) {
+        instances++;
+      } else {
+        try {
+          fs.unlinkSync(entry);
+        } catch {}
+      }
+    }
+  } catch {}
+
+  return {
+    instances,
+    unregister: () => {
+      try {
+        fs.unlinkSync(self);
+      } catch {}
+    },
+  };
+}
+
+// Usable core count: honors CPU affinity (taskset, container cpusets).
+function availableCpus() {
+  return typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length;
+}
+
+// Usable RAM: honors a cgroup memory limit (containers) when it is tighter
+// than physical RAM.
+function totalMemory() {
+  const total = os.totalmem();
+  const constrained = typeof process.constrainedMemory === 'function' ? process.constrainedMemory() : 0;
+  return constrained > 0 && constrained < total ? constrained : total;
+}
+
+// RAM currently available to this process (MemAvailable on Linux, bounded by
+// the cgroup limit when there is one).
+function freeMemory() {
+  return typeof process.availableMemory === 'function' ? process.availableMemory() : os.freemem();
+}
+
+// Idle cores right now, sampled over CPU_SAMPLE_MS.
+function sampleIdleCpus(cpus) {
+  const before = os.cpus();
+  return new Promise((resolve) => {
+    setTimeout(() => resolve(measureIdleCpus(before, os.cpus(), cpus)), CPU_SAMPLE_MS);
+  });
+}
+
+async function main() {
   const BINARY_NAME = process.platform === 'win32' ? 'tsgo.exe' : 'tsgo';
   const BIN_PATH = join(__dirname, BINARY_NAME);
 
-  const env = resolveEnv(process.env, os.totalmem());
+  const { instances, unregister } = registerInstance();
+  process.on('exit', unregister);
+
+  const cpus = availableCpus();
+  // Sampling costs CPU_SAMPLE_MS of startup; skip it when it cannot matter.
+  const idleCpus = process.env.GOMAXPROCS ? undefined : await sampleIdleCpus(cpus);
+
+  const env = resolveEnv(process.env, {
+    cpus,
+    totalMem: totalMemory(),
+    instances,
+    idleCpus,
+    availableMem: freeMemory(),
+  });
 
   // Forward all arguments to the binary
-  const result = spawnSync(BIN_PATH, process.argv.slice(2), {
+  const child = spawn(BIN_PATH, process.argv.slice(2), {
     stdio: 'inherit',
     shell: false,
     env,
   });
 
-  process.exit(result.status || 0);
+  // Keep the launcher alive until tsgo exits so the registry entry stays
+  // accurate; tsgo receives terminal signals directly from the process group,
+  // and signals sent to the launcher alone are forwarded.
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    process.on(signal, () => {
+      child.kill(signal);
+    });
+  }
+
+  child.on('error', (err) => {
+    console.error(`vue-go-tsc: failed to start ${BIN_PATH}: ${err.message}`);
+    process.exit(1);
+  });
+
+  child.on('exit', (code, signal) => {
+    if (signal) {
+      // Report a killed tsgo (e.g. OOM killer) as a failure, not a success.
+      const signum = os.constants.signals[signal];
+      process.exit(signum ? 128 + signum : 1);
+    }
+    process.exit(code ?? 1);
+  });
 }
 
-module.exports = { computeGoMemLimit, resolveEnv, GiB, DEFAULT_MEM_FRACTION };
+if (require.main === module) {
+  main();
+}
+
+module.exports = {
+  computeGoMaxProcs,
+  computeGoMemLimit,
+  measureIdleCpus,
+  resolveEnv,
+  registerInstance,
+  GiB,
+  DEFAULT_CPU_FRACTION,
+  DEFAULT_MEM_FRACTION,
+  SHARED_MEM_FRACTION,
+  MIN_MEM_LIMIT,
+  AVAILABLE_MEM_FRACTION,
+  MIN_CPU_FRACTION,
+};

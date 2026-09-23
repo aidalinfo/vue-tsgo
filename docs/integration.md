@@ -230,6 +230,7 @@ base, puis retirez-le.
 | `-b` ne remonte aucune erreur | tsconfig non composite → utilisez le **Mode A** (`-p .nuxt/tsconfig.json`). |
 | Erreurs `.ts` inattendues vs `vue-tsc` | Delta amont typescript-go vs tsc (attendu). Voir la section Error Parity du README. |
 | Job `Killed` / exit 137 (OOM killer) | Sur les gros projets, le tas Go de `tsgo` peut dépasser la RAM du runner. Depuis la **v0.2.1**, le launcher pose automatiquement `GOMEMLIMIT` = *50 % de la RAM totale* (limite mémoire *soft* du runtime Go) pour éviter le kill tout en laissant de la place aux jobs concurrents. Pour ajuster, forcez une valeur explicite : `GOMEMLIMIT=6GiB pnpm typecheck:vue`. |
+| CPU à 100 % / plusieurs typechecks en parallèle | Depuis la **v0.2.2**, le launcher pose `GOMAXPROCS` = *moitié des cœurs* par défaut. Les exécutions concurrentes se déclarent dans `$TMPDIR/vue-go-tsc-instances` et se partagent la machine : chaque nouvelle exécution reçoit une part des cœurs et d'un pool de 75 % de la RAM pour `GOMEMLIMIT`. Il tient aussi compte des autres programmes : au démarrage il mesure les cœurs inactifs (~200 ms) et la RAM disponible, et ne prend jamais plus que ce qui est libre (plancher : 1/8 des cœurs et 1 Go). Pour forcer : `GOMAXPROCS=4 pnpm typecheck:vue` (on peut aussi réduire `--checkers` / `--builders`). |
 
 ---
 
