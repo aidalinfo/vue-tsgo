@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-23
+
+### ✨ Features
+
+- **Volar codegen by default: same errors as vue-tsc** — the `.vue` virtual
+  code now comes from `@vue/language-core`, the codegen vue-tsc runs, taken
+  from the project's own `vue-tsc` (so a vue-tsc 2.2 project and a 3.x project
+  each get their exact Volar); a bundled copy is used when the project has
+  none. Type-checking stays in tsgo. The Go port of the codegen could only
+  match one Volar version and lagged behind it: on Pulse ERP (vue-tsc 2.2.12)
+  it missed 11 errors vue-tsc reports. The plugin ships in the package
+  (`volar/plugin.mjs`), runs in a few Node worker threads sized by the
+  launcher's CPU/RAM budget, caches its output in
+  `~/.cache/vue-go-tsc/volar-codegen`, reads the checked tsconfig's
+  `vueCompilerOptions`, and forwards Volar's per-mapping diagnostic filters.
+- **`--codegen=go`** (or `VUE_GO_TSC_CODEGEN=go`) keeps the previous Go
+  codegen: fastest, no Node worker.
+- **Codegen parity CI** — `scripts/parity-check.mjs` compares vue-tsc, the
+  Volar codegen and the Go codegen on `tests/parity` (floating Volar versions,
+  nightly run): it fails if the default mode diverges from vue-tsc and warns
+  on Go codegen divergences still to port.
+
+### ⚠️ Behavior change
+
+- Projects may see **new errors**: they are the errors vue-tsc already reports
+  and the Go codegen missed. `--codegen=go` restores the previous behavior.
+- The Volar codegen needs `typescript` in the project (it errors clearly
+  otherwise). The editor extension still uses the Go codegen.
+
+### 🐛 Bug Fixes
+
+- A plugin that fails to start or dies mid-run now reports a clear error and
+  exits 1 instead of a Go panic, and the Node process exits with tsgo.
+
 ## [0.2.4] - 2026-09-23
 
 ### 🐛 Bug Fixes

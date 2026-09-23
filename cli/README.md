@@ -39,14 +39,35 @@ nuxt prepare && vue-go-tsc -p .nuxt/tsconfig.json --noEmit
 
 See the full [CI integration guide](https://github.com/aidalinfo/vue-tsgo/blob/main/docs/integration.md).
 
+### Codegen modes
+
+The `.vue` files are turned into TypeScript ("virtual code") before tsgo
+type-checks them. Two codegens are available:
+
+| Mode | How | When |
+|---|---|---|
+| `volar` (**default**) | `@vue/language-core` — the codegen `vue-tsc` runs — taken from your project's `vue-tsc` (bundled copy if you have none) | Same results as `vue-tsc`, for your Volar version |
+| `go` | Built-in Go port of the codegen | Fastest; may differ from `vue-tsc` where the port lags behind Volar |
+
+```bash
+vue-go-tsc --noEmit -p tsconfig.json                 # Volar codegen (default)
+vue-go-tsc --codegen=go --noEmit -p tsconfig.json    # Go codegen
+VUE_GO_TSC_CODEGEN=go vue-go-tsc --noEmit            # same, via env
+```
+
+The Volar codegen runs in a few Node worker threads next to tsgo and caches
+its output in `~/.cache/vue-go-tsc/volar-codegen` (`GOLAR_VUE_CACHE=0` to
+disable). It needs `typescript` installed in the project. The type-checking
+itself is always tsgo.
+
 ## Why vue-go-tsc?
 
 - **~5–25× faster** than vue-tsc (project-dependent) — e.g. on the Pulse ERP
   monorepo: app ~232s → **~49s** (~4.7×), docs site ~28s → **~1.5s** (~18×)
 - **Lower memory usage** — native Go instead of Node.js
 - **Drop-in replacement** for vue-tsc
-- **Zero `.vue` file error delta** with vue-tsc on real-world projects
-  (verified 4 = 4 on Pulse ERP, 0 = 0 on its docs site)
+- **Same errors as vue-tsc** — the default Volar codegen is vue-tsc's own,
+  checked against vue-tsc in CI (`tests/parity`)
 
 ## Documentation
 

@@ -48,6 +48,7 @@ type languageData struct {
 	ignoreDirectives      []mapping.IgnoreDirectiveMapping
 	expectErrorDirectives []mapping.ExpectErrorDirectiveMapping
 	propNames             []mapping.PropNameMapping
+	mappingSuppressed     []uint8
 }
 
 func (h *compilerHostProxy) GetSourceFile(opts ast.SourceFileParseOptions) *ast.SourceFile {
@@ -110,10 +111,20 @@ func init() {
 	for pluginName := range strings.SplitSeq(pluginNames, ",") {
 		switch pluginName {
 		case "vue":
-			// TODO: Use relative path resolution instead of hardcoded paths
-			vuePlugin, err = pluginhost.NewPlugin([]string{"node", "packages/vue/src/index.ts"})
+			// Volar codegen mode. The vue-go-tsc launcher sets the bundled plugin
+			// path and its own Node executable; the defaults serve a repo checkout.
+			entry := "packages/vue/src/index.ts"
+			if e, ok := os.LookupEnv("GOLAR_VUE_PLUGIN_ENTRY"); ok {
+				entry = e
+			}
+			node := "node"
+			if n, ok := os.LookupEnv("GOLAR_NODE"); ok {
+				node = n
+			}
+			vuePlugin, err = pluginhost.NewPlugin([]string{node, entry})
 			if err != nil {
-				panic(err)
+				fmt.Fprintf(os.Stderr, "vue-go-tsc: cannot start the Volar codegen: %v\n", err)
+				os.Exit(1)
 			}
 			for _, ext := range vuePlugin.ExtraExtensions {
 				tspath.RegisterSupportedExtension(ext)
@@ -282,6 +293,7 @@ func parseFile(fs vfs.FS, opts ast.SourceFileParseOptions, sourceText string, sc
 		} else {
 			langData.sourceMap = mapping.NewSourceMap(resp.Mappings)
 			langData.ignoreDirectives = resp.IgnoreMappings
+			langData.mappingSuppressed = resp.MappingSuppressedCodes
 		}
 		file.GolarLanguageData = langData
 		// diags := file.Diagnostics()
@@ -489,6 +501,9 @@ func wrapDiagnostics(file *ast.SourceFile, diagnostics []*ast.Diagnostic, collec
 			continue
 		}
 		if mapping.IsUnknownPropDiagnostic(langData.propNames, diag.Code(), diag.Loc()) {
+			continue
+		}
+		if langData.mappingSuppressed != nil && !mapping.IsReportedThroughMappings(langData.sourceMap.Mappings, langData.mappingSuppressed, diag.Code(), diag.Loc()) {
 			continue
 		}
 		if adjusted := adjustDiagnostic(file, diag); adjusted != nil {

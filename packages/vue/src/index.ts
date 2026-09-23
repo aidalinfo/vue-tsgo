@@ -1,73 +1,96 @@
 import { createVolarPlugin } from '@golar/volar'
-import { forEachEmbeddedCode } from '@vue/language-core'
-import * as ts from './typescript-lite.js'
-import compilerDom from '@vue/compiler-dom'
-import { createParsedCommandLineByJson } from '@vue/language-core'
-import { VueVirtualCode } from '@vue/language-core/lib/virtualCode/index.js'
-import PluginVueTsx from '@vue/language-core/lib/plugins/vue-tsx.js'
-import PluginFileVue from '@vue/language-core/lib/plugins/file-vue.js'
-import PluginVueScriptJs from '@vue/language-core/lib/plugins/vue-script-js.js'
-import PluginVueTemplateHtml from '@vue/language-core/lib/plugins/vue-template-html.js'
+import * as bundledCore from '@vue/language-core'
+import bundledCorePkg from '@vue/language-core/package.json' with { type: 'json' }
+import { createRequire } from 'node:module'
+import os from 'node:os'
+import path from 'node:path'
+import process from 'node:process'
+import { fileURLToPath } from 'node:url'
 
-const { vueOptions } = createParsedCommandLineByJson(ts, ts.sys, ts.sys.getCurrentDirectory(), {})
+// Volar codegen mode: the .vue virtual code comes from `@vue/language-core`,
+// the same codegen vue-tsc runs, so vue-go-tsc checks exactly what vue-tsc
+// checks. Type-checking itself stays in tsgo.
+//
+// The project's own version is used whenever it has vue-tsc (parity with the
+// vue-tsc it would run: 2.2.x and 3.x differ); the bundled copy otherwise.
 
-const plugins = (await Promise.all([
-	PluginVueTsx,
-	PluginFileVue,
-	PluginVueScriptJs,
-	PluginVueTemplateHtml,
-])).flatMap(({ default: ctor }) => ctor({
-	modules: {
-		typescript: ts,
-		"@vue/compiler-dom": compilerDom
-	},
-	compilerOptions: {},
-	vueCompilerOptions: vueOptions,
-}))
+type LanguageCore = typeof import('@vue/language-core')
+type TypeScript = typeof import('typescript')
+
+function fail(message: string): never {
+	console.error(`vue-go-tsc: Volar codegen: ${message}\n  (run with --codegen=go to use the built-in Go codegen instead)`)
+	process.exit(1)
+}
+
+// The tsconfig being checked (set by the vue-go-tsc launcher from -p/--project).
+const configPath = path.resolve(process.env.GOLAR_VUE_TSCONFIG ?? 'tsconfig.json')
+const projectDir = path.dirname(configPath)
+
+function loadVolar(): { core: LanguageCore, ts: TypeScript, coreVersion: string, source: string } {
+	const projectRequire = createRequire(path.join(projectDir, 'package.json'))
+	let vueTscRequire: NodeJS.Require | undefined
+	let vueTscDir: string | undefined
+	try {
+		vueTscDir = path.dirname(projectRequire.resolve('vue-tsc/package.json'))
+		vueTscRequire = createRequire(path.join(vueTscDir, 'package.json'))
+	} catch {
+		// no vue-tsc in the project: bundled language-core below
+	}
+
+	let ts: TypeScript
+	try {
+		ts = (vueTscRequire ?? projectRequire)('typescript')
+	} catch {
+		fail(`cannot resolve "typescript" from ${projectDir}`)
+	}
+
+	if (vueTscRequire) {
+		try {
+			return {
+				core: vueTscRequire('@vue/language-core'),
+				ts,
+				coreVersion: vueTscRequire('@vue/language-core/package.json').version,
+				source: vueTscDir!,
+			}
+		} catch (err) {
+			fail(`cannot load @vue/language-core from ${vueTscDir}: ${(err as Error).message}`)
+		}
+	}
+	return { core: bundledCore, ts, coreVersion: bundledCorePkg.version, source: 'bundled' }
+}
+
+const { core, ts, coreVersion, source } = loadVolar()
+
+let parsed: ReturnType<LanguageCore['createParsedCommandLine']>
+try {
+	parsed = ts.sys.fileExists(configPath)
+		? core.createParsedCommandLine(ts, ts.sys, configPath)
+		: core.createParsedCommandLineByJson(ts, ts.sys, projectDir, {})
+} catch (err) {
+	fail(`cannot read ${configPath}: ${(err as Error).message}`)
+}
+
+if (process.env.GOLAR_VUE_DEBUG) {
+	console.error(`[vue-go-tsc] Volar codegen: @vue/language-core ${coreVersion} (${source}), TypeScript ${ts.version}, tsconfig ${configPath}`)
+}
+
+const vueLanguagePlugin = core.createVueLanguagePlugin(ts, parsed.options, parsed.vueOptions, (id: string) => id)
+
+// Everything the generated code depends on besides the .vue file itself.
+function cacheIdentity(): string | undefined {
+	try {
+		return JSON.stringify([coreVersion, source, ts.version, parsed.vueOptions, parsed.options])
+	} catch {
+		return undefined
+	}
+}
+const identity = process.env.GOLAR_VUE_CACHE === '0' ? undefined : cacheIdentity()
 
 createVolarPlugin({
-	filename: import.meta.filename,
-	languagePlugins: [
-		{
-			getLanguageId(scriptId) {
-			  return scriptId.endsWith('.vue') ? 'vue' : undefined
-			},
-			createVirtualCode(scriptId, languageId, snapshot) {
-				return new VueVirtualCode(
-					scriptId,
-					languageId,
-					snapshot,
-					vueOptions,
-					plugins,
-					ts,
-				);
-			},
-			typescript: {
-				extraFileExtensions: [{
-					extension: 'vue',
-					isMixedContent: true,
-					scriptKind: 7 satisfies import('typescript').ScriptKind.Deferred,
-				}],
-				getServiceScript(root) {
-					for (const code of forEachEmbeddedCode(root)) {
-						if (/script_(js|jsx|ts|tsx)/.test(code.id)) {
-							const lang = code.id.slice('script_'.length);
-							return {
-								code,
-								extension: '.' + lang,
-								scriptKind: lang === 'js'
-									? ts.ScriptKind.JS
-									: lang === 'jsx'
-									? ts.ScriptKind.JSX
-									: lang === 'tsx'
-									? ts.ScriptKind.TSX
-									: ts.ScriptKind.TS,
-							};
-						}
-					}
-					return undefined
-				}
-			}
-		},
-	]
+	filename: fileURLToPath(import.meta.url),
+	languagePlugins: [vueLanguagePlugin],
+	cache: identity === undefined ? undefined : {
+		dir: process.env.GOLAR_VUE_CACHE_DIR ?? path.join(os.homedir(), '.cache', 'vue-go-tsc', 'volar-codegen'),
+		key: identity,
+	},
 })

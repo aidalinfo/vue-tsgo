@@ -1,0 +1,55 @@
+name: Codegen parity
+
+# vue-go-tsc vs vue-tsc on tests/parity (scripts/parity-check.mjs).
+# - Fails when the Volar codegen (the default mode) differs from vue-tsc.
+# - Warns when the Go codegen differs: a Volar change still to port.
+# tests/parity floats vue / vue-tsc on purpose, and the nightly run checks each
+# new Volar release even when nothing is pushed here.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+
+jobs:
+  parity:
+    name: Codegen parity
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Launcher and installer tests
+        run: node --test cli/bin/vue-go-tsc.test.js cli/install.test.js
+
+      - name: Build tsgo
+        run: go build -o ./build/tsgo ./thirdparty/typescript-go/cmd/tsgo
+
+      - name: Build Volar codegen plugin
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile --ignore-scripts --filter "@golar/vue..."
+          node packages/vue/scripts/build-plugin.mjs
+
+      - name: Install parity fixture
+        working-directory: tests/parity
+        run: |
+          npm install --no-package-lock
+          npm ls vue vue-tsc typescript
+
+      - name: Compare with vue-tsc
+        run: node scripts/parity-check.mjs --tsgo ./build/tsgo --plugin cli/volar/plugin.mjs tests/parity

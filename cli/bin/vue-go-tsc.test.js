@@ -6,6 +6,9 @@ const os = require('node:os');
 const path = require('node:path');
 
 const {
+  parseCodegenArgs,
+  resolveProjectConfig,
+  computeCodegenWorkers,
   computeGoMaxProcs,
   computeGoMemLimit,
   measureIdleCpus,
@@ -185,4 +188,58 @@ test('registerInstance degrades to alone when the registry is unusable', () => {
   const { instances, unregister } = registerInstance(path.join(file, 'sub'));
   assert.strictEqual(instances, 1);
   unregister();
+});
+
+test('parseCodegenArgs defaults to the Volar codegen and strips the flag', () => {
+  assert.deepStrictEqual(parseCodegenArgs(['--noEmit', '-p', 'tsconfig.json']), {
+    codegen: 'volar',
+    args: ['--noEmit', '-p', 'tsconfig.json'],
+  });
+  assert.deepStrictEqual(parseCodegenArgs(['--codegen=go', '--noEmit']), { codegen: 'go', args: ['--noEmit'] });
+  assert.deepStrictEqual(parseCodegenArgs(['--noEmit', '--codegen', 'go']), { codegen: 'go', args: ['--noEmit'] });
+});
+
+test('parseCodegenArgs honors VUE_GO_TSC_CODEGEN, the flag wins', () => {
+  assert.strictEqual(parseCodegenArgs([], { VUE_GO_TSC_CODEGEN: 'go' }).codegen, 'go');
+  assert.strictEqual(parseCodegenArgs(['--codegen=volar'], { VUE_GO_TSC_CODEGEN: 'go' }).codegen, 'volar');
+});
+
+test('parseCodegenArgs rejects unknown modes', () => {
+  assert.match(parseCodegenArgs(['--codegen=fast']).error, /invalid codegen mode "fast"/);
+  assert.match(parseCodegenArgs(['--codegen']).error, /invalid codegen mode/);
+});
+
+test('resolveProjectConfig finds the checked tsconfig', () => {
+  const isDir = (p) => !p.endsWith('.json');
+  assert.strictEqual(resolveProjectConfig(['--noEmit'], '/app', isDir), '/app/tsconfig.json');
+  assert.strictEqual(resolveProjectConfig(['-p', '.nuxt/tsconfig.shared.json'], '/app', isDir), '/app/.nuxt/tsconfig.shared.json');
+  assert.strictEqual(resolveProjectConfig(['--project', 'sub'], '/app', isDir), '/app/sub/tsconfig.json');
+  assert.strictEqual(resolveProjectConfig(['--project=/abs/tsconfig.json'], '/app', isDir), '/abs/tsconfig.json');
+  assert.strictEqual(resolveProjectConfig(['-b', 'packages/a', '--noEmit'], '/app', isDir), '/app/packages/a/tsconfig.json');
+  assert.strictEqual(resolveProjectConfig(['-b', '--noEmit'], '/app', isDir), '/app/tsconfig.json');
+});
+
+test('computeCodegenWorkers uses half the cores, capped, and fits the free memory', () => {
+  assert.strictEqual(computeCodegenWorkers(8, 32 * GiB), 4);
+  assert.strictEqual(computeCodegenWorkers(4, 32 * GiB), 2);
+  assert.strictEqual(computeCodegenWorkers(1, 32 * GiB), 1);
+  assert.strictEqual(computeCodegenWorkers(8, 3 * GiB), 1, '1/8 of 3 GiB fits one 200 MB worker');
+  assert.strictEqual(computeCodegenWorkers(8, 0), 4, 'unknown free memory: cores only');
+});
+
+test('resolveEnv wires the Volar codegen and reserves its memory', () => {
+  const volar = { pluginEntry: '/pkg/volar/plugin.mjs', nodePath: '/usr/bin/node', tsconfig: '/app/tsconfig.json' };
+  const env = resolveEnv({}, { ...machine, codegen: 'volar', volar, availableMem: 8 * GiB });
+  assert.strictEqual(env.GOLAR_PLUGIN, 'vue');
+  assert.strictEqual(env.GOLAR_PLUGIN_WORKERS, '4');
+  assert.strictEqual(env.GOLAR_VUE_PLUGIN_ENTRY, volar.pluginEntry);
+  assert.strictEqual(env.GOLAR_NODE, volar.nodePath);
+  assert.strictEqual(env.GOLAR_VUE_TSCONFIG, volar.tsconfig);
+  const goLimit = Number(resolveEnv({}, { ...machine, availableMem: 8 * GiB }).GOMEMLIMIT);
+  assert.strictEqual(Number(env.GOMEMLIMIT), goLimit - 200 * 1024 ** 2 * 5, 'base + 4 workers reserved');
+});
+
+test('resolveEnv with the Go codegen never enables the plugin', () => {
+  const env = resolveEnv({ GOLAR_PLUGIN: 'vue' }, { ...machine, codegen: 'go' });
+  assert.strictEqual('GOLAR_PLUGIN' in env, false);
 });
