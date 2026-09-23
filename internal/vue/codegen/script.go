@@ -129,19 +129,27 @@ func generateScript(base *codegenCtx, scriptSetupEl *vue_ast.ElementNode, script
 		// function so the `generic="T extends ..."` type parameters are in scope
 		// throughout (props type, ctx, template). Matches Volar's codegen; the
 		// matching close + export is emitted at the "Export" section below.
-		// Imports are HOISTED above the wrapper (import statements cannot live inside
-		// the arrow body — TS1232/TS2307 otherwise); the content emission then starts
-		// after them (hoistedImportsEnd) so they are not re-emitted.
+		// The leading "import section" (imports, re-exports, exported type
+		// declarations) is HOISTED above the wrapper: import statements and export
+		// modifiers cannot live inside the arrow body (TS1232/TS2307/TS1184
+		// otherwise), and exported types must stay module-level to be importable.
+		// The content emission then starts after it (hoistedImportsEnd) so it is
+		// not re-emitted.
 		hoistedImportsEnd := 0
 		if hasGeneric {
 			c.serviceText.WriteString("/* placeholder */\n")
 			if c.scriptSetupEl.Ast != nil {
 				for _, stmt := range c.scriptSetupEl.Ast.Statements.Nodes {
-					if stmt.Kind != ast.KindImportDeclaration {
-						break // only contiguous leading imports are hoisted
+					if !isImportSectionStatement(stmt) {
+						break // only the contiguous leading section is hoisted
 					}
-					impLoc := utils.TrimNodeTextRange(c.scriptSetupEl.Ast, stmt)
-					c.mapText(innerStart+impLoc.Pos(), innerStart+impLoc.End())
+					if stmt.Kind == ast.KindImportDeclaration {
+						impLoc := utils.TrimNodeTextRange(c.scriptSetupEl.Ast, stmt)
+						c.mapText(innerStart+impLoc.Pos(), innerStart+impLoc.End())
+					} else {
+						// Keep the leading trivia so JSDoc on exported types survives.
+						c.mapText(innerStart+stmt.Pos(), innerStart+stmt.End())
+					}
 					c.serviceText.WriteString("\n")
 					hoistedImportsEnd = innerStart + stmt.End()
 				}
@@ -325,6 +333,30 @@ func generateScript(base *codegenCtx, scriptSetupEl *vue_ast.ElementNode, script
 					if propsVariableName != "" {
 						calleeLoc := utils.TrimNodeTextRange(c.scriptSetupEl.Ast, callee)
 						c.reportDiagnostic(utils.MoveTextRange(calleeLoc, innerStart), vue_diagnostics.Duplicate_X_0_call, "defineProps")
+						break
+					}
+					if calleeName == "defineProps" && (call.Arguments == nil || len(call.Arguments.Nodes) == 0) &&
+						call.TypeArguments != nil && len(call.TypeArguments.Nodes) == 1 {
+						// Type-only `defineProps<T>()` without a variable — Volar model
+						// (generateDefineWithTypeTransforms): extract the type argument
+						// into `type __VLS_Props = T` and bind the call to `__VLS_props`.
+						// `typeof defineProps<T>()` would instead go through vue's
+						// DefineProps<T, BooleanKey<T>>, which stays unresolved when T
+						// depends on a `generic` type parameter: the props then vanish
+						// from the instance type and every template access fails.
+						typeLoc := utils.TrimNodeTextRange(c.scriptSetupEl.Ast, call.TypeArguments.Nodes[0])
+						stmtLoc := utils.TrimNodeTextRange(c.scriptSetupEl.Ast, statement)
+						c.mapText(c.lastMappedPos, innerStart+stmtLoc.Pos())
+						c.serviceText.WriteString("type __VLS_Props = ")
+						c.mapText(innerStart+typeLoc.Pos(), innerStart+typeLoc.End())
+						c.serviceText.WriteString(";\nconst __VLS_props = ")
+						c.mapText(innerStart+stmtLoc.Pos(), innerStart+typeLoc.Pos())
+						c.serviceText.WriteString("__VLS_Props")
+						c.mapText(innerStart+typeLoc.End(), innerStart+stmtLoc.End())
+						c.lastMappedPos = innerStart + stmtLoc.End()
+						c.propsAliasEmitted = true
+						propsVariableName = "__VLS_props"
+						propsTypeName = "__VLS_Props"
 						break
 					}
 					propsVariableName = "__VLS_Props"
@@ -662,8 +694,22 @@ func generateScript(base *codegenCtx, scriptSetupEl *vue_ast.ElementNode, script
 	}
 }
 
-// emitScriptSetupContent emits the script setup content inline, handling import hoisting
-// and Volar-style defineProps/defineEmits type extraction.
+// isImportSectionStatement reports whether a top-level `<script setup>`
+// statement belongs to the leading "import section" that a generic SFC hoists
+// above its generic wrapper function: imports, re-exports, empty statements,
+// `import x = require()`, and exported type aliases/interfaces. Mirrors the
+// statements Volar skips when computing `importSectionEndOffset`
+// (language-core/lib/parsers/scriptSetupRanges.ts).
+func isImportSectionStatement(stmt *ast.Node) bool {
+	switch stmt.Kind {
+	case ast.KindImportDeclaration, ast.KindExportDeclaration, ast.KindEmptyStatement, ast.KindImportEqualsDeclaration:
+		return true
+	case ast.KindTypeAliasDeclaration, ast.KindInterfaceDeclaration:
+		return ast.HasSyntacticModifier(stmt, ast.ModifierFlagsExport)
+	}
+	return false
+}
+
 // dedupeStrings returns the input slice with duplicates removed, preserving first-seen order.
 func dedupeStrings(in []string) []string {
 	var seen collections.Set[string]
