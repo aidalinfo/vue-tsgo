@@ -263,6 +263,14 @@ async function main() {
 
   child.on('error', (err) => {
     console.error(`vue-go-tsc: failed to start ${BIN_PATH}: ${err.message}`);
+    if (['ENOENT', 'EACCES', 'ENOEXEC'].includes(err.code)) {
+      // Missing, non-executable or truncated binary (e.g. an interrupted
+      // install, or a package manager that skipped the postinstall script).
+      console.error(
+        `vue-go-tsc: the tsgo binary is missing or broken; reinstall it with:\n` +
+          `  node ${join(__dirname, '..', 'install.js')}`
+      );
+    }
     process.exit(1);
   });
 
