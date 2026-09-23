@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-09-23
+
+### 🐛 Bug Fixes
+
+- **CLI: an interrupted install no longer leaves a broken `tsgo` behind** —
+  `install.js` wrote the download straight onto `bin/tsgo` and trusted any
+  existing file, so an install cut mid-download (Ctrl+C, a sibling
+  postinstall failing, a network drop) left a truncated, non-executable binary
+  that every later install kept (`spawn … EACCES`). The binary is now
+  downloaded to a temporary file, checked against `Content-Length`, and only
+  renamed into place once complete; cache copies are atomic; an existing or
+  cached binary is kept only if it runs (`--version`), otherwise it is
+  replaced. The launcher prints how to repair a missing/broken binary.
+
 ## [0.2.2] - 2026-09-23
 
 ### 🐛 Bug Fixes

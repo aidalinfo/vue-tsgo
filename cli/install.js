@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 
-const { existsSync, mkdirSync, chmodSync, copyFileSync } = require('fs');
+const { existsSync, mkdirSync, chmodSync, copyFileSync, renameSync, rmSync, readdirSync, createWriteStream } = require('fs');
 const { join } = require('path');
 const os = require('os');
+const http = require('http');
 const https = require('https');
-const { createWriteStream } = require('fs');
+const { spawnSync } = require('child_process');
 
 const PACKAGE_VERSION = require('./package.json').version;
 const BINARY_NAME = process.platform === 'win32' ? 'tsgo.exe' : 'tsgo';
@@ -16,6 +17,8 @@ const BIN_PATH = join(BIN_DIR, BINARY_NAME);
 // on local reinstalls. Override the location with VUE_GO_TSC_CACHE_DIR.
 const CACHE_ROOT = process.env.VUE_GO_TSC_CACHE_DIR || join(os.homedir(), '.cache', 'vue-go-tsc');
 const CACHE_DIR = join(CACHE_ROOT, `v${PACKAGE_VERSION}`);
+
+const MAX_REDIRECTS = 10;
 
 // Platform mapping for GitHub releases
 const PLATFORM_MAP = {
@@ -41,46 +44,151 @@ function getPlatformBinary() {
   return PLATFORM_MAP[key];
 }
 
-function download(url, dest) {
+// A file next to `dest` that is unique to this process, so concurrent
+// installs (parallel CI jobs, pnpm workspaces) never write the same file.
+function tempPathFor(dest) {
+  return `${dest}.${process.pid}.tmp`;
+}
+
+// Temporary files being written by this process, removed if it is killed.
+const pendingTempFiles = new Set();
+
+function cleanupPendingTempFiles() {
+  for (const tmp of pendingTempFiles) {
+    rmSync(tmp, { force: true });
+  }
+}
+
+// Remove temporary binaries left in `dir` by an install that was killed
+// before it could clean up. Only for directories no other install writes to.
+function removeStaleTempFiles(dir, name) {
+  try {
+    for (const entry of readdirSync(dir)) {
+      if (entry.startsWith(`${name}.`) && entry.endsWith('.tmp')) {
+        rmSync(join(dir, entry), { force: true });
+      }
+    }
+  } catch {}
+}
+
+// Download `url` to `dest`.
+//
+// The body is streamed into a temporary file and only renamed onto `dest` once
+// it is complete: an interrupted install (Ctrl+C, a sibling postinstall
+// failing, a network cut) must never leave a truncated binary behind, since a
+// present binary is what later installs trust. A body shorter than the
+// announced Content-Length is rejected for the same reason.
+function download(url, dest, redirects = 0) {
   return new Promise((resolve, reject) => {
-    const file = createWriteStream(dest);
-    https.get(url, (response) => {
-      if (response.statusCode === 302 || response.statusCode === 301) {
-        // Follow redirect
-        download(response.headers.location, dest).then(resolve).catch(reject);
+    const client = url.startsWith('http:') ? http : https;
+    const request = client.get(url, (response) => {
+      const { statusCode } = response;
+      if ([301, 302, 303, 307, 308].includes(statusCode) && response.headers.location) {
+        response.resume();
+        if (redirects >= MAX_REDIRECTS) {
+          reject(new Error(`Download failed: too many redirects (${url})`));
+          return;
+        }
+        const next = new URL(response.headers.location, url).toString();
+        download(next, dest, redirects + 1).then(resolve, reject);
         return;
       }
 
-      if (response.statusCode !== 200) {
-        reject(new Error(`Download failed: ${response.statusCode} ${response.statusMessage}`));
+      if (statusCode !== 200) {
+        response.resume();
+        reject(new Error(`Download failed: ${statusCode} ${response.statusMessage}`));
         return;
       }
+
+      const expected = Number(response.headers['content-length']);
+      const tmp = tempPathFor(dest);
+      pendingTempFiles.add(tmp);
+      const file = createWriteStream(tmp);
+      let received = 0;
+      let failed = false;
+
+      const fail = (err) => {
+        if (failed) return;
+        failed = true;
+        response.destroy();
+        file.destroy();
+        rmSync(tmp, { force: true });
+        pendingTempFiles.delete(tmp);
+        reject(err);
+      };
+
+      response.on('data', (chunk) => {
+        received += chunk.length;
+      });
+      response.on('aborted', () => fail(new Error('Download failed: connection closed early')));
+      response.on('error', fail);
+      file.on('error', fail);
+      file.on('finish', () => {
+        if (failed) return;
+        if (Number.isFinite(expected) && expected > 0 && received !== expected) {
+          fail(new Error(`Download failed: received ${received} of ${expected} bytes`));
+          return;
+        }
+        file.close((err) => {
+          if (err) {
+            fail(err);
+            return;
+          }
+          try {
+            renameSync(tmp, dest);
+            pendingTempFiles.delete(tmp);
+            resolve();
+          } catch (renameErr) {
+            fail(renameErr);
+          }
+        });
+      });
 
       response.pipe(file);
-      file.on('finish', () => {
-        file.close();
-        resolve();
-      });
-    }).on('error', (err) => {
-      reject(err);
     });
+    request.on('error', reject);
   });
 }
 
-function finalizeBinary() {
+// Copy `src` onto `dest` through a temporary file, so a reader never sees a
+// partially written binary (the shared cache is read by concurrent installs).
+function copyAtomic(src, dest) {
+  const tmp = tempPathFor(dest);
+  try {
+    copyFileSync(src, tmp);
+    renameSync(tmp, dest);
+  } finally {
+    rmSync(tmp, { force: true });
+  }
+}
+
+function makeExecutable(path) {
   // Make executable (Unix-like systems)
   if (process.platform !== 'win32') {
-    chmodSync(BIN_PATH, 0o755);
+    chmodSync(path, 0o755);
   }
+}
+
+// A binary is usable when it exists and actually runs: this rejects a
+// truncated or corrupted file (e.g. left by an install from an older version
+// of this script) instead of trusting it forever.
+function isUsableBinary(path) {
+  if (!existsSync(path)) {
+    return false;
+  }
+  const result = spawnSync(path, ['--version'], { stdio: 'ignore', timeout: 30000 });
+  return !result.error && result.status === 0;
 }
 
 async function install() {
   try {
-    // Check if binary already exists (useful for development)
-    if (existsSync(BIN_PATH)) {
+    // Keep a working binary (useful for development and reinstalls).
+    if (isUsableBinary(BIN_PATH)) {
       console.log('✓ vue-go-tsc binary already exists');
       return;
     }
+    rmSync(BIN_PATH, { force: true });
+    removeStaleTempFiles(BIN_DIR, BINARY_NAME);
 
     if (!existsSync(BIN_DIR)) {
       mkdirSync(BIN_DIR, { recursive: true });
@@ -89,14 +197,18 @@ async function install() {
     const platformBinary = getPlatformBinary();
     const cachedBinary = join(CACHE_DIR, platformBinary);
 
-    // 1) Serve from the shared cache when present (best-effort — a cache miss or
-    //    error just falls through to the download below).
+    // 1) Serve from the shared cache when present (best-effort — a cache miss,
+    //    an error or a corrupted entry just falls through to the download).
     try {
       if (existsSync(cachedBinary)) {
-        copyFileSync(cachedBinary, BIN_PATH);
-        finalizeBinary();
-        console.log(`✓ vue-go-tsc restored from cache (${cachedBinary})`);
-        return;
+        copyAtomic(cachedBinary, BIN_PATH);
+        makeExecutable(BIN_PATH);
+        if (isUsableBinary(BIN_PATH)) {
+          console.log(`✓ vue-go-tsc restored from cache (${cachedBinary})`);
+          return;
+        }
+        rmSync(BIN_PATH, { force: true });
+        rmSync(cachedBinary, { force: true });
       }
     } catch {
       // ignore — download is the source of truth
@@ -107,14 +219,14 @@ async function install() {
     console.log('Installing vue-go-tsc...');
     console.log(`Downloading from: ${downloadUrl}`);
     await download(downloadUrl, BIN_PATH);
-    finalizeBinary();
+    makeExecutable(BIN_PATH);
 
     // 3) Populate the cache for next time (never fail the install on this).
     try {
       if (!existsSync(CACHE_DIR)) {
         mkdirSync(CACHE_DIR, { recursive: true });
       }
-      copyFileSync(BIN_PATH, cachedBinary);
+      copyAtomic(BIN_PATH, cachedBinary);
     } catch {
       // cache is an optimization only
     }
@@ -131,4 +243,15 @@ async function install() {
   }
 }
 
-install();
+if (require.main === module) {
+  // An interrupted install must not leave a partial download behind.
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    process.on(signal, () => {
+      cleanupPendingTempFiles();
+      process.exit(128 + os.constants.signals[signal]);
+    });
+  }
+  install();
+}
+
+module.exports = { download, copyAtomic, isUsableBinary };
