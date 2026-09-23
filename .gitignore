@@ -7,3 +7,6 @@ editors/vscode/dist/
 # Vendored typescript-go: exclude large unnecessary directories
 thirdparty/typescript-go/_submodules/
 thirdparty/typescript-go/testdata/
+
+# Bundled Volar codegen plugin (built by packages/vue/scripts/build-plugin.mjs)
+cli/volar/

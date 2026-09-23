@@ -2,7 +2,7 @@
 
 const { spawn } = require('child_process');
 const fs = require('fs');
-const { join } = require('path');
+const { join, resolve } = require('path');
 const os = require('os');
 
 const GiB = 1024 ** 3;
@@ -44,6 +44,21 @@ const MIN_MEM_LIMIT = 1 * GiB;
 const STALE_ENTRY_MS = 24 * 60 * 60 * 1000;
 
 const REGISTRY_DIR = join(os.tmpdir(), 'vue-go-tsc-instances');
+
+// Codegen modes. `volar` (default) generates the .vue virtual code with
+// `@vue/language-core` — the codegen vue-tsc itself runs, taken from the
+// project's vue-tsc — so results match vue-tsc; type-checking stays in tsgo.
+// `go` uses the built-in Go port of the codegen (faster, but it can only match
+// one Volar version and may lag behind it).
+const CODEGEN_MODES = ['volar', 'go'];
+const DEFAULT_CODEGEN = 'volar';
+
+// Approximate resident memory of the Volar codegen Node processes (measured
+// ~180 MB per worker thread on a Nuxt app, plus the main thread). Reserved
+// out of the Go heap ceiling so both fit in the machine's budget.
+const VOLAR_BASE_MEM = 200 * 1024 ** 2;
+const VOLAR_WORKER_MEM = 200 * 1024 ** 2;
+const MAX_CODEGEN_WORKERS = 4;
 
 // Compute GOMAXPROCS for one of `instances` concurrent runs on a machine with
 // `cpus` cores of which `idleCpus` are currently idle.
@@ -118,10 +133,71 @@ function computeGoMemLimit(totalBytes, instances = 1, availableBytes) {
   return Math.floor(Math.max(Math.min(MIN_MEM_LIMIT, totalBytes * DEFAULT_MEM_FRACTION), share));
 }
 
+// Split `--codegen=<mode>` / `--codegen <mode>` out of the tsgo arguments.
+// The VUE_GO_TSC_CODEGEN env var sets the default; the flag wins.
+function parseCodegenArgs(argv, env = {}) {
+  let codegen = env.VUE_GO_TSC_CODEGEN || DEFAULT_CODEGEN;
+  const args = [];
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--codegen') {
+      codegen = argv[++i];
+    } else if (arg.startsWith('--codegen=')) {
+      codegen = arg.slice('--codegen='.length);
+    } else {
+      args.push(arg);
+    }
+  }
+  if (!CODEGEN_MODES.includes(codegen)) {
+    return { args, error: `invalid codegen mode ${JSON.stringify(codegen)} (expected ${CODEGEN_MODES.join(' or ')})` };
+  }
+  return { codegen, args };
+}
+
+// The tsconfig tsgo will check, for the Volar codegen to read its
+// vueCompilerOptions: `-p/--project <file|dir>`, the first `-b/--build`
+// project, or ./tsconfig.json.
+function resolveProjectConfig(args, cwd, isDirectory = (p) => fs.statSync(p).isDirectory()) {
+  let target;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '-p' || arg === '--project') {
+      target = args[i + 1];
+      break;
+    }
+    if (arg.startsWith('--project=')) {
+      target = arg.slice('--project='.length);
+      break;
+    }
+    if ((arg === '-b' || arg === '--build') && args[i + 1] && !args[i + 1].startsWith('-')) {
+      target = args[i + 1];
+      break;
+    }
+  }
+  const resolved = resolve(cwd, target ?? '.');
+  let dir = false;
+  try {
+    dir = isDirectory(resolved);
+  } catch {}
+  return dir ? join(resolved, 'tsconfig.json') : resolved;
+}
+
+// Number of Volar codegen worker threads: half the Go cores (codegen overlaps
+// with tsgo's own parsing), at most MAX_CODEGEN_WORKERS, fewer when free RAM is
+// short (a worker must not take more than 1/8 of the available memory).
+function computeCodegenWorkers(procs, availableMem) {
+  let workers = Math.min(MAX_CODEGEN_WORKERS, Math.max(1, Math.floor((procs || 2) / 2)));
+  if (Number.isFinite(availableMem) && availableMem > 0) {
+    workers = Math.min(workers, Math.max(1, Math.floor(availableMem / 8 / VOLAR_WORKER_MEM)));
+  }
+  return workers;
+}
+
 // Return a copy of `env` with GOMAXPROCS and GOMEMLIMIT defaulted from the
 // machine resources, what is currently free, and the number of concurrent
-// runs. Explicit values are always respected (never overridden).
-function resolveEnv(env, { cpus, totalMem, instances = 1, idleCpus, availableMem }) {
+// runs. Explicit values are always respected (never overridden). With the
+// Volar codegen, its Node processes get a share of the memory budget.
+function resolveEnv(env, { cpus, totalMem, instances = 1, idleCpus, availableMem, codegen = 'go', volar }) {
   const out = { ...env };
   if (!out.GOMAXPROCS) {
     const procs = computeGoMaxProcs(cpus, instances, idleCpus);
@@ -129,8 +205,24 @@ function resolveEnv(env, { cpus, totalMem, instances = 1, idleCpus, availableMem
       out.GOMAXPROCS = String(procs);
     }
   }
+  let workers = 0;
+  if (codegen === 'volar') {
+    workers = Number(out.GOLAR_PLUGIN_WORKERS) || computeCodegenWorkers(Number(out.GOMAXPROCS), availableMem);
+    out.GOLAR_PLUGIN = 'vue';
+    out.GOLAR_PLUGIN_WORKERS = String(workers);
+    if (volar) {
+      out.GOLAR_VUE_PLUGIN_ENTRY = volar.pluginEntry;
+      out.GOLAR_NODE = volar.nodePath;
+      out.GOLAR_VUE_TSCONFIG = volar.tsconfig;
+    }
+  } else {
+    delete out.GOLAR_PLUGIN;
+  }
   if (!out.GOMEMLIMIT) {
-    const limit = computeGoMemLimit(totalMem, instances, availableMem);
+    let limit = computeGoMemLimit(totalMem, instances, availableMem);
+    if (limit && workers > 0) {
+      limit = Math.floor(Math.max(Math.min(MIN_MEM_LIMIT, limit), limit - VOLAR_BASE_MEM - workers * VOLAR_WORKER_MEM));
+    }
     if (limit) {
       // A bare integer is interpreted by the Go runtime as a byte count.
       out.GOMEMLIMIT = String(limit);
@@ -229,6 +321,17 @@ function sampleIdleCpus(cpus) {
 async function main() {
   const BINARY_NAME = process.platform === 'win32' ? 'tsgo.exe' : 'tsgo';
   const BIN_PATH = join(__dirname, BINARY_NAME);
+  const VOLAR_PLUGIN = join(__dirname, '..', 'volar', 'plugin.mjs');
+
+  const { codegen, args, error } = parseCodegenArgs(process.argv.slice(2), process.env);
+  if (error) {
+    console.error(`vue-go-tsc: ${error}`);
+    process.exit(1);
+  }
+  if (codegen === 'volar' && !fs.existsSync(VOLAR_PLUGIN)) {
+    console.error(`vue-go-tsc: the Volar codegen plugin is missing (${VOLAR_PLUGIN}); reinstall vue-go-tsc or use --codegen=go`);
+    process.exit(1);
+  }
 
   const { instances, unregister } = registerInstance();
   process.on('exit', unregister);
@@ -243,10 +346,16 @@ async function main() {
     instances,
     idleCpus,
     availableMem: freeMemory(),
+    codegen,
+    volar: {
+      pluginEntry: VOLAR_PLUGIN,
+      nodePath: process.execPath,
+      tsconfig: resolveProjectConfig(args, process.cwd()),
+    },
   });
 
-  // Forward all arguments to the binary
-  const child = spawn(BIN_PATH, process.argv.slice(2), {
+  // Forward the remaining arguments to the binary
+  const child = spawn(BIN_PATH, args, {
     stdio: 'inherit',
     shell: false,
     env,
@@ -289,6 +398,9 @@ if (require.main === module) {
 }
 
 module.exports = {
+  parseCodegenArgs,
+  resolveProjectConfig,
+  computeCodegenWorkers,
   computeGoMaxProcs,
   computeGoMemLimit,
   measureIdleCpus,

@@ -47,17 +47,20 @@ func NewPlugin(args []string) (*Plugin, error) {
 
 	var header [5]byte
 	var recvBuf []byte
+	// A plugin that fails to start (missing dependency, bad config) exits
+	// before its initialization message; its own stderr explains why.
 	if _, err := io.ReadFull(p.stdout, header[:4]); err != nil {
-		panic(err)
+		_ = cmd.Wait()
+		return nil, fmt.Errorf("plugin %v exited before initializing", args)
 	}
 	payloadLen := binary.LittleEndian.Uint32(header[:])
 	recvBuf = ensureCap(recvBuf, payloadLen)
 	if _, err := io.ReadFull(p.stdout, recvBuf); err != nil {
-		panic(err)
+		return nil, fmt.Errorf("reading plugin initialization: %v", err)
 	}
 	initialization := plugin.InitializationMessage{}
 	if err := json.Unmarshal(recvBuf, &initialization); err != nil {
-		panic(err)
+		return nil, fmt.Errorf("decoding plugin initialization: %v", err)
 	}
 	p.ExtraExtensions = initialization.ExtraExtensions
 
@@ -65,17 +68,16 @@ func NewPlugin(args []string) (*Plugin, error) {
 		for {
 			_, err := io.ReadFull(p.stdout, header[:])
 			if err != nil {
-				// TODO?
-				// if err == io.EOF {
-				// 	return
-				// }
-				panic(err)
+				// The plugin died mid-run: pending requests can never complete.
+				fmt.Fprintf(os.Stderr, "vue-go-tsc: plugin %v stopped unexpectedly: %v\n", args, err)
+				os.Exit(1)
 			}
 			msgKind := plugin.MsgKind(header[0])
 			payloadLen := binary.LittleEndian.Uint32(header[1:])
 			recvBuf = ensureCap(recvBuf, payloadLen)
 			if _, err := io.ReadFull(p.stdout, recvBuf); err != nil {
-				panic(err)
+				fmt.Fprintf(os.Stderr, "vue-go-tsc: plugin %v stopped unexpectedly: %v\n", args, err)
+				os.Exit(1)
 			}
 			switch msgKind {
 			case plugin.MsgKindCreateServiceCodeResponse:

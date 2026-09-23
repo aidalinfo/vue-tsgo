@@ -111,14 +111,20 @@ func init() {
 	for pluginName := range strings.SplitSeq(pluginNames, ",") {
 		switch pluginName {
 		case "vue":
-			// TODO: Use relative path resolution instead of hardcoded paths
+			// Volar codegen mode. The vue-go-tsc launcher sets the bundled plugin
+			// path and its own Node executable; the defaults serve a repo checkout.
 			entry := "packages/vue/src/index.ts"
 			if e, ok := os.LookupEnv("GOLAR_VUE_PLUGIN_ENTRY"); ok {
 				entry = e
 			}
-			vuePlugin, err = pluginhost.NewPlugin([]string{"node", entry})
+			node := "node"
+			if n, ok := os.LookupEnv("GOLAR_NODE"); ok {
+				node = n
+			}
+			vuePlugin, err = pluginhost.NewPlugin([]string{node, entry})
 			if err != nil {
-				panic(err)
+				fmt.Fprintf(os.Stderr, "vue-go-tsc: cannot start the Volar codegen: %v\n", err)
+				os.Exit(1)
 			}
 			for _, ext := range vuePlugin.ExtraExtensions {
 				tspath.RegisterSupportedExtension(ext)

@@ -259,6 +259,15 @@ jobs:
         working-directory: cli
         run: npm version ${{ needs.prepare.outputs.version }} --no-git-tag-version --allow-same-version
 
+      # The Volar codegen plugin (default codegen) ships inside the package as a
+      # single bundled file: cli/volar/plugin.mjs.
+      - name: Build Volar codegen plugin
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile --ignore-scripts --filter "@golar/vue..."
+          node packages/vue/scripts/build-plugin.mjs
+          test -s cli/volar/plugin.mjs
+
       - name: Resolve package metadata
         id: meta
         working-directory: cli

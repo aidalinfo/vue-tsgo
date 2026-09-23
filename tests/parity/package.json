@@ -1,0 +1,11 @@
+{
+  "name": "vue-go-tsc-parity-fixture",
+  "private": true,
+  "description": "Corpus for scripts/parity-check.mjs: vue-go-tsc (Volar and Go codegen) vs vue-tsc. Versions float on purpose so a new Volar release is checked as soon as it ships.",
+  "type": "module",
+  "devDependencies": {
+    "typescript": "~5.9.3",
+    "vue": "^3.5.0",
+    "vue-tsc": "^3.3.0"
+  }
+}
