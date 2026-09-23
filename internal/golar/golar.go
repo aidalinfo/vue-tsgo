@@ -71,7 +71,7 @@ func (h *compilerHostProxy) GetSourceFile(opts ast.SourceFileParseOptions) *ast.
 		// the original FileName so the module graph identity is unchanged.
 		if strings.Contains(opts.FileName, "/node_modules/") {
 			candidates := []string{
-				opts.FileName + ".d.ts",                             // X.vue.d.ts
+				opts.FileName + ".d.ts", // X.vue.d.ts
 				strings.TrimSuffix(opts.FileName, ext) + ".d" + ext + ".ts", // X.d.vue.ts
 			}
 			for _, decl := range candidates {
