@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-09-23
+
+### 🐛 Bug Fixes
+
+- **CLI: stop pinning the CPU at 100% and share resources between concurrent
+  runs** — the `vue-go-tsc` launcher now defaults `GOMAXPROCS` to half of the
+  available cores (Go otherwise uses every core). Concurrent runs register in a
+  shared instance registry (`$TMPDIR/vue-go-tsc-instances`) and split the
+  machine: each new run gets a fair share of the cores and of a 75% RAM pool
+  for `GOMEMLIMIT` (so N runs no longer each claim 50% of RAM and thrash the
+  GC). The launcher also adapts to other work on the machine: it samples the
+  idle cores (~200 ms) and reads the available RAM at startup, and never takes
+  more than what is free (at least 1/8 of the cores and 1 GiB, so a momentary
+  spike cannot cripple a run). Explicit `GOMAXPROCS` / `GOMEMLIMIT` values are
+  always respected.
+- **CLI: report a killed `tsgo` as a failure** — a `tsgo` terminated by a
+  signal (e.g. the OOM killer) used to make the launcher exit `0`; it now exits
+  `128 + signal`. Signals sent to the launcher are forwarded to `tsgo`.
+
 ## [0.2.1] - 2026-07-24
 
 ### 🐛 Bug Fixes
