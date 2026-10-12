@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/NikhilVerma/vue-tsgo/internal/mapping"
+	"github.com/NikhilVerma/vue-tsgo/internal/memlimit"
 	"github.com/NikhilVerma/vue-tsgo/internal/pluginhost"
 	"github.com/NikhilVerma/vue-tsgo/internal/utils"
 	"github.com/NikhilVerma/vue-tsgo/internal/vue/codegen"
@@ -36,6 +37,10 @@ func init() {
 	// includes .vue files in the program. Without this, the filesparser
 	// rejects .vue files when AllowNonTsExtensions is not set.
 	tspath.RegisterSupportedExtension(".vue")
+
+	// Let the vue-go-tsc launcher adjust GOMEMLIMIT while the check runs
+	// (e.g. raise it once a concurrent run has finished).
+	memlimit.FollowLauncher()
 }
 
 type compilerHostProxy struct {
