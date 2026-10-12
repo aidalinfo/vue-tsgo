@@ -60,6 +60,16 @@ const VOLAR_BASE_MEM = 200 * 1024 ** 2;
 const VOLAR_WORKER_MEM = 200 * 1024 ** 2;
 const MAX_CODEGEN_WORKERS = 4;
 
+// A running tsgo gets a new GOMEMLIMIT only when it moves by at least this
+// much, so small fluctuations of the available RAM do not cause churn.
+const MEM_LIMIT_STEP = 64 * 1024 ** 2;
+
+// Environment variable naming the file descriptor of the channel over which
+// tsgo reports its memory usage and receives GOMEMLIMIT updates (see
+// internal/memlimit).
+const MEMLIMIT_FD_ENV = 'VUE_GO_TSC_MEMLIMIT_FD';
+const MEMLIMIT_FD = 3;
+
 // Compute GOMAXPROCS for one of `instances` concurrent runs on a machine with
 // `cpus` cores of which `idleCpus` are currently idle.
 //
@@ -193,6 +203,32 @@ function computeCodegenWorkers(procs, availableMem) {
   return workers;
 }
 
+// Memory reserved for the Volar codegen Node processes.
+function codegenMemReserve(workers) {
+  return workers > 0 ? VOLAR_BASE_MEM + workers * VOLAR_WORKER_MEM : 0;
+}
+
+// GOMEMLIMIT of one run: its share of the machine (computeGoMemLimit) minus
+// the memory reserved for its Volar codegen workers. Null when unknown.
+function computeRunMemLimit(totalMem, instances, availableMem, workers = 0) {
+  const limit = computeGoMemLimit(totalMem, instances, availableMem);
+  if (!limit || workers <= 0) {
+    return limit;
+  }
+  return Math.floor(Math.max(Math.min(MIN_MEM_LIMIT, limit), limit - codegenMemReserve(workers)));
+}
+
+// GOMEMLIMIT of a run that is already in progress, re-evaluated as concurrent
+// runs come and go and as RAM is freed or taken elsewhere: the same budget a
+// run starting now would get, except that the RAM currently held by this run
+// (`usage`, reported by tsgo, plus its codegen reservation, which the Volar
+// workers are assumed to fill) counts as available to it — otherwise its own
+// growth would keep shrinking its limit.
+function computeAdjustedMemLimit({ totalMem, instances, availableMem, usage, workers = 0 }) {
+  const held = (Number.isFinite(usage) && usage > 0 ? usage : 0) + codegenMemReserve(workers);
+  return computeRunMemLimit(totalMem, instances, availableMem + held, workers);
+}
+
 // Return a copy of `env` with GOMAXPROCS and GOMEMLIMIT defaulted from the
 // machine resources, what is currently free, and the number of concurrent
 // runs. Explicit values are always respected (never overridden). With the
@@ -219,10 +255,7 @@ function resolveEnv(env, { cpus, totalMem, instances = 1, idleCpus, availableMem
     delete out.GOLAR_PLUGIN;
   }
   if (!out.GOMEMLIMIT) {
-    let limit = computeGoMemLimit(totalMem, instances, availableMem);
-    if (limit && workers > 0) {
-      limit = Math.floor(Math.max(Math.min(MIN_MEM_LIMIT, limit), limit - VOLAR_BASE_MEM - workers * VOLAR_WORKER_MEM));
-    }
+    const limit = computeRunMemLimit(totalMem, instances, availableMem, workers);
     if (limit) {
       // A bare integer is interpreted by the Go runtime as a byte count.
       out.GOMEMLIMIT = String(limit);
@@ -257,6 +290,19 @@ function registerInstance(dir = REGISTRY_DIR, pid = process.pid, now = Date.now(
     return { instances: 1, unregister: () => {} };
   }
 
+  return {
+    instances: countInstances(dir, pid, now),
+    unregister: () => {
+      try {
+        fs.unlinkSync(self);
+      } catch {}
+    },
+  };
+}
+
+// Number of live runs registered in `dir`, counting the run `pid` itself.
+// Entries of runs that are gone are pruned on the way.
+function countInstances(dir = REGISTRY_DIR, pid = process.pid, now = Date.now()) {
   let instances = 1;
   try {
     for (const name of fs.readdirSync(dir)) {
@@ -280,15 +326,38 @@ function registerInstance(dir = REGISTRY_DIR, pid = process.pid, now = Date.now(
       }
     }
   } catch {}
+  return instances;
+}
 
-  return {
-    instances,
-    unregister: () => {
-      try {
-        fs.unlinkSync(self);
-      } catch {}
-    },
-  };
+// Keep the GOMEMLIMIT of a running tsgo up to date. tsgo writes
+// "usage <bytes>" lines to `channel` about once a second; on each of them the
+// limit is re-evaluated with `measure()` (current instance count and available
+// RAM) and, when it moved by MEM_LIMIT_STEP or more, sent back as
+// "limit <bytes>". This is what gives a run its memory back once a concurrent
+// run has finished, instead of keeping the share it got at startup.
+function followMemLimit(channel, { initialLimit, totalMem, workers, measure }) {
+  let current = initialLimit;
+  let pending = '';
+  channel.setEncoding('utf8');
+  channel.on('data', (chunk) => {
+    pending += chunk;
+    const lines = pending.split('\n');
+    pending = lines.pop();
+    const usages = lines.filter((line) => line.startsWith('usage ')).map((line) => Number(line.slice('usage '.length)));
+    // Only the most recent report matters.
+    const usage = usages.at(-1);
+    if (usage === undefined || !Number.isFinite(usage)) {
+      return;
+    }
+    const { instances, availableMem } = measure();
+    const next = computeAdjustedMemLimit({ totalMem, instances, availableMem, usage, workers });
+    if (next && Math.abs(next - current) >= MEM_LIMIT_STEP) {
+      current = next;
+      channel.write(`limit ${next}\n`);
+    }
+  });
+  // tsgo exiting closes the channel; the launcher exits with it.
+  channel.on('error', () => {});
 }
 
 // Usable core count: honors CPU affinity (taskset, container cpusets).
@@ -354,12 +423,30 @@ async function main() {
     },
   });
 
+  // Unless GOMEMLIMIT was set explicitly, open a channel to re-evaluate it
+  // while tsgo runs. Windows cannot hand an extra descriptor to a Go program.
+  const followLimit = !process.env.GOMEMLIMIT && env.GOMEMLIMIT && process.platform !== 'win32';
+  const stdio = ['inherit', 'inherit', 'inherit'];
+  if (followLimit) {
+    stdio[MEMLIMIT_FD] = 'pipe';
+    env[MEMLIMIT_FD_ENV] = String(MEMLIMIT_FD);
+  }
+
   // Forward the remaining arguments to the binary
   const child = spawn(BIN_PATH, args, {
-    stdio: 'inherit',
+    stdio,
     shell: false,
     env,
   });
+
+  if (followLimit) {
+    followMemLimit(child.stdio[MEMLIMIT_FD], {
+      initialLimit: Number(env.GOMEMLIMIT),
+      totalMem: totalMemory(),
+      workers: env.GOLAR_PLUGIN ? Number(env.GOLAR_PLUGIN_WORKERS) || 0 : 0,
+      measure: () => ({ instances: countInstances(), availableMem: freeMemory() }),
+    });
+  }
 
   // Keep the launcher alive until tsgo exits so the registry entry stays
   // accurate; tsgo receives terminal signals directly from the process group,
@@ -403,10 +490,15 @@ module.exports = {
   computeCodegenWorkers,
   computeGoMaxProcs,
   computeGoMemLimit,
+  computeRunMemLimit,
+  computeAdjustedMemLimit,
+  followMemLimit,
   measureIdleCpus,
   resolveEnv,
   registerInstance,
+  countInstances,
   GiB,
+  MEM_LIMIT_STEP,
   DEFAULT_CPU_FRACTION,
   DEFAULT_MEM_FRACTION,
   SHARED_MEM_FRACTION,

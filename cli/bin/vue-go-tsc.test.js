@@ -3,6 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
+const { EventEmitter } = require('node:events');
 const path = require('node:path');
 
 const {
@@ -14,7 +15,12 @@ const {
   measureIdleCpus,
   resolveEnv,
   registerInstance,
+  countInstances,
+  computeRunMemLimit,
+  computeAdjustedMemLimit,
+  followMemLimit,
   GiB,
+  MEM_LIMIT_STEP,
   DEFAULT_MEM_FRACTION,
   MIN_MEM_LIMIT,
   AVAILABLE_MEM_FRACTION,
@@ -242,4 +248,95 @@ test('resolveEnv wires the Volar codegen and reserves its memory', () => {
 test('resolveEnv with the Go codegen never enables the plugin', () => {
   const env = resolveEnv({ GOLAR_PLUGIN: 'vue' }, { ...machine, codegen: 'go' });
   assert.strictEqual('GOLAR_PLUGIN' in env, false);
+});
+
+test('countInstances counts live runs without registering', () => {
+  const dir = tempRegistry();
+  assert.strictEqual(countInstances(dir), 1);
+  const other = path.join(dir, String(process.ppid));
+  fs.writeFileSync(other, String(Date.now()));
+  assert.strictEqual(countInstances(dir), 2);
+  fs.unlinkSync(other);
+  assert.strictEqual(countInstances(dir), 1, 'a finished run frees its share');
+});
+
+test('computeAdjustedMemLimit counts the memory already held by the run as available', () => {
+  const totalMem = 16 * GiB;
+  // Alone on the machine, holding 3 GiB, with 9 GiB still free: the run is
+  // entitled to the same half of RAM it would get on a free machine.
+  const limit = computeAdjustedMemLimit({ totalMem, instances: 1, availableMem: 9 * GiB, usage: 3 * GiB });
+  assert.strictEqual(limit, 8 * GiB);
+  // Without accounting for its own usage, its growth would shrink its limit.
+  assert.ok(computeGoMemLimit(totalMem, 1, 9 * GiB) < limit);
+});
+
+test('computeAdjustedMemLimit matches the startup limit for an idle run', () => {
+  const opts = { totalMem: 16 * GiB, instances: 2, availableMem: 5 * GiB };
+  assert.strictEqual(
+    computeAdjustedMemLimit({ ...opts, usage: 0, workers: 4 }),
+    computeRunMemLimit(16 * GiB, 2, 5 * GiB + 200 * 1024 ** 2 * 5, 4)
+  );
+  assert.strictEqual(computeAdjustedMemLimit({ ...opts, usage: 0 }), computeRunMemLimit(16 * GiB, 2, 5 * GiB));
+});
+
+// A fake tsgo end of the launcher channel.
+function fakeChannel() {
+  const channel = new EventEmitter();
+  channel.sent = [];
+  channel.setEncoding = () => {};
+  channel.write = (line) => channel.sent.push(line);
+  return channel;
+}
+
+test('followMemLimit raises the limit once a concurrent run has finished', () => {
+  const totalMem = 16 * GiB;
+  const workers = 4;
+  // Pulse starts next to Docs: two runs, little free RAM.
+  let state = { instances: 2, availableMem: 4.5 * GiB };
+  const initialLimit = computeRunMemLimit(totalMem, state.instances, state.availableMem, workers);
+  const channel = fakeChannel();
+  followMemLimit(channel, { initialLimit, totalMem, workers, measure: () => state });
+
+  // Still sharing the machine, the codegen workers and 1 GiB of Go heap now
+  // hold part of the RAM that was free at startup: nothing changes.
+  state = { instances: 2, availableMem: 4.5 * GiB - 200 * 1024 ** 2 * 5 - GiB };
+  channel.emit('data', `usage ${GiB}\n`);
+  assert.deepStrictEqual(channel.sent, []);
+
+  // Docs finishes: Pulse holds 2.5 GiB and the RAM Docs used is free again.
+  state = { instances: 1, availableMem: 9 * GiB };
+  channel.emit('data', `usage ${2.5 * GiB}\n`);
+  const raised = computeAdjustedMemLimit({ totalMem, ...state, usage: 2.5 * GiB, workers });
+  assert.deepStrictEqual(channel.sent, [`limit ${raised}\n`]);
+  assert.ok(raised > initialLimit + GiB, `${raised} should be well above ${initialLimit}`);
+});
+
+test('followMemLimit lowers the limit when another run starts', () => {
+  const totalMem = 16 * GiB;
+  let state = { instances: 1, availableMem: 14 * GiB };
+  const initialLimit = computeRunMemLimit(totalMem, 1, state.availableMem);
+  const channel = fakeChannel();
+  followMemLimit(channel, { initialLimit, totalMem, workers: 0, measure: () => state });
+  state = { instances: 3, availableMem: 10 * GiB };
+  channel.emit('data', `usage ${2 * GiB}\n`);
+  assert.deepStrictEqual(channel.sent, [`limit ${computeGoMemLimit(totalMem, 3, 12 * GiB)}\n`]);
+});
+
+test('followMemLimit ignores small moves, partial lines and noise', () => {
+  const totalMem = 16 * GiB;
+  const state = { instances: 1, availableMem: 10 * GiB };
+  const initialLimit = computeAdjustedMemLimit({ totalMem, ...state, usage: GiB });
+  const channel = fakeChannel();
+  followMemLimit(channel, { initialLimit, totalMem, workers: 0, measure: () => state });
+  channel.emit('data', `usage ${GiB + MEM_LIMIT_STEP / 2}\n`);
+  channel.emit('data', 'garbage\nusage abc\n');
+  assert.deepStrictEqual(channel.sent, [], 'below the step or unparsable');
+
+  // A report split across chunks is only read once complete; the most recent
+  // complete report wins.
+  state.instances = 4;
+  channel.emit('data', 'usage 1');
+  assert.deepStrictEqual(channel.sent, []);
+  channel.emit('data', `0\nusage ${GiB}\n`);
+  assert.deepStrictEqual(channel.sent, [`limit ${computeAdjustedMemLimit({ totalMem, ...state, usage: GiB })}\n`]);
 });
