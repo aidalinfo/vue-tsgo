@@ -1,0 +1,93 @@
+# .seve/workflows/ci.yml
+#
+# Vérifications de vue-tsgo : tests Go des fonctionnalités Vue, tests du lanceur et de l'installeur npm, go vet et
+# gofmt, compilation croisée du binaire tsgo et paquet VSIX. Remplace .github/workflows/ci.yml.
+#
+# Déclencheurs : la PR vers `main`, `seve test` (snapshot), la gate de `seve land` (land), le push sur `main` et
+# `seve ci dispatch ci.yml`. Le cache par couches saute les étapes dont l'empreinte a déjà réussi : le push sur
+# `main` réutilise ce que la gate du land vient de prouver.
+#
+# Différence avec l'ancien workflow GitHub : les runners Sève sont Linux. Les binaires macOS et Windows sont
+# compilés en croisé (CGO_ENABLED=0, comme la release) mais ne sont plus exécutés ; seul le binaire Linux
+# passe le test `--version`.
+
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    paths-ignore: ['**/*.md']
+  snapshot:
+  land:
+  workflow_dispatch:
+
+# Un nouveau push sur la PR annule le run précédent. L'événement est dans le groupe : un `seve test` (snapshot)
+# n'annule jamais la gate d'un land en cours sur la même tâche.
+concurrency:
+  group: ci-${{ seve.event_name }}-${{ seve.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: [linux]
+    timeout-minutes: 45
+    steps:
+      - uses: seve/setup-go@v1
+      # Les fixtures Vue (internal/vue/tests/vue-3.*) sont installées par le postinstall de la racine (setup).
+      # KNOWN_FAILURES : tests déjà rouges sur `main` (même liste sur GitHub Actions depuis 9397408, le passage au
+      # codegen Volar par défaut), exclus pour que la gate bloque les nouvelles régressions sans bloquer tous les
+      # lands. Une tâche qui en répare un le retire de la liste ; ne jamais en ajouter pour faire passer une gate.
+      - name: Tests Go
+        run: |
+          KNOWN_FAILURES='TestComponentEventCompound|TestComponentPropTypeMismatchDefinePropsVariable|TestCssModuleDefaultBindingInTemplate|TestCssModuleNamedBindingInTemplate|TestDefineEmitsVariableDecl|TestDefineExposeCallExpression|TestDefineModelEmitsDollar|TestDefinePropsCallExpression|TestDefinePropsVariableDecl|TestDefinePropsWithDefaults|TestGlobalTypesNoErrors|TestRequiredDefineModelProps|TestSetupGeneric|TestSetupGenericDefineModel|TestTSDirectivesResetByText|TestTSDirectivesSuppressDiagnostics|TestVForArraySource|TestVForIterableSource|TestVForNumberSource|TestVForStringSource'
+          go test ./internal/vue/tests/... -count=1 -skip "^($KNOWN_FAILURES)\$"
+      - name: Tests du lanceur et de l'installeur
+        run: node --test cli/bin/vue-go-tsc.test.js cli/install.test.js
+
+  lint:
+    runs-on: [linux]
+    timeout-minutes: 30
+    steps:
+      - uses: seve/setup-go@v1
+      - name: go vet
+        run: go vet ./internal/... ./cmd/... ./tools/... ./plugin/...
+      - name: gofmt
+        run: |
+          UNFORMATTED=$(gofmt -l . | grep -v '^thirdparty/' || true)
+          if [ -n "$UNFORMATTED" ]; then
+            echo "Code Go non formaté :"
+            echo "$UNFORMATTED"
+            gofmt -d $UNFORMATTED
+            exit 1
+          fi
+
+  build:
+    runs-on: [linux]
+    timeout-minutes: 45
+    steps:
+      - uses: seve/setup-go@v1
+      - name: Compilation croisée de tsgo
+        run: |
+          set -e
+          for target in linux/amd64 darwin/arm64 windows/amd64; do
+            goos=${target%/*}; goarch=${target#*/}
+            ext=$([ "$goos" = windows ] && echo .exe || true)
+            echo "== $goos/$goarch"
+            CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build -o "build/tsgo-$goos-$goarch$ext" ./thirdparty/typescript-go/cmd/tsgo
+          done
+        outputs-files: [build]
+      - name: Test du binaire Linux
+        run: ./build/tsgo-linux-amd64 --version
+      - name: Extension VS Code
+        run: |
+          set -e
+          mkdir -p editors/vscode/lib
+          cp build/tsgo-linux-amd64 editors/vscode/lib/tsgo
+          cd editors/vscode
+          # Pas `npm ci` : package-lock.json n'est pas à jour (esbuild 0.27.3 manque), comme dans l'ancien workflow.
+          npm install --no-audit --no-fund
+          npm run build
+          npm run bundle
+          npx @vscode/vsce package --no-dependencies

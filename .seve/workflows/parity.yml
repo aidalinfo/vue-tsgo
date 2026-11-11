@@ -1,0 +1,49 @@
+# .seve/workflows/parity.yml
+#
+# vue-go-tsc contre vue-tsc sur tests/parity (scripts/parity-check.mjs). Remplace .github/workflows/parity.yml.
+# - Échoue quand le codegen Volar (mode par défaut) diffère de vue-tsc.
+# - Avertit quand le codegen Go diffère : un changement de Volar reste à porter.
+# tests/parity laisse flotter vue et vue-tsc exprès, et le run de nuit vérifie chaque nouvelle version de Volar
+# même quand rien n'est poussé ici.
+#
+# Pas de `land` : le corpus suit les dernières versions publiées de vue-tsc, une sortie de Volar ne doit pas
+# bloquer les lands. `seve test` (snapshot) le lance pour qu'une tâche voie tout de suite un écart de parité.
+
+name: parity
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    paths-ignore: ['**/*.md']
+  snapshot:
+  schedule:
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: parity-${{ seve.event_name }}-${{ seve.ref }}
+  cancel-in-progress: true
+
+jobs:
+  parity:
+    runs-on: [linux]
+    timeout-minutes: 45
+    steps:
+      - uses: seve/setup-go@v1
+      - name: Build de tsgo
+        run: go build -o ./build/tsgo ./thirdparty/typescript-go/cmd/tsgo
+        outputs-files: [build/tsgo]
+      # Paquets @golar/* installés par le setup (pnpm install de la racine).
+      - name: Plugin de codegen Volar
+        run: node packages/vue/scripts/build-plugin.mjs && test -s cli/volar/plugin.mjs
+        outputs-files: [cli/volar]
+      # Versions flottantes : installation et comparaison ne sont jamais reprises du cache (cache: false), sinon le
+      # run de nuit ne verrait pas une nouvelle version de vue-tsc.
+      - name: Comparaison avec vue-tsc
+        cache: false
+        run: |
+          set -e
+          (cd tests/parity && npm install --no-package-lock && npm ls vue vue-tsc typescript)
+          node scripts/parity-check.mjs --tsgo ./build/tsgo --plugin cli/volar/plugin.mjs tests/parity

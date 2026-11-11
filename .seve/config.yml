@@ -1,0 +1,10 @@
+# Configuration Sève de ce dépôt (docs/utilisation.md § 7 du dépôt aidalinfo/seve).
+#
+# Les vérifications (tests Go, lint, builds, extension VS Code) sont dans .seve/workflows/ci.yml, qui écoute
+# `snapshot` (seve test) et `land` (gate de seve land) : `test` et `gate` ne servent pas tant qu'il existe.
+#
+# L'installation pnpm de la racine installe aussi, par le postinstall de package.json, les fixtures Vue des tests
+# Go (internal/vue/tests/vue-3.*) : le snapshot chaud les contient.
+setup: pnpm install --frozen-lockfile
+ci:
+  setup: pnpm install --frozen-lockfile

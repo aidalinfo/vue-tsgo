@@ -1,0 +1,167 @@
+# .seve/workflows/release.yml
+#
+# Release de vue-tsgo, au push sur `main` qui change la version de cli/package.json (une tâche de bump intégrée
+# par seve land), et à la demande (`seve ci dispatch release.yml`). Remplace .github/workflows/release.yml,
+# version-bump.yml et pre-release-check.yml.
+#
+# 1. Vérifie la version (semver) et qu'elle n'a pas déjà été publiée depuis un autre commit.
+# 2. Compile tsgo pour linux/darwin/windows × amd64/arm64 (CGO_ENABLED=0, compilation croisée sur Linux).
+# 3. Paquets VSIX par plateforme (le Marketplace n'est pas publié : l'extension y appartient à l'auteur amont).
+# 4. Release GitHub `v<version>`, tag posé sur le commit livré, avec binaires et VSIX. cli/install.js (postinstall
+#    du paquet npm) télécharge le binaire depuis
+#    https://github.com/aidalinfo/vue-tsgo/releases/download/v<version>/tsgo-<os>-<arch> : la release GitHub
+#    doit exister AVANT la publication npm, et les noms des binaires ne doivent pas changer.
+# 5. Publication npm de `vue-go-tsc` (dossier cli/) sur registry.npmjs.org.
+#
+# Secrets du dépôt, usage « livraison » (jamais reçus par une tâche, une PR ni la gate) :
+# - GH_RELEASE_TOKEN : jeton GitHub limité à aidalinfo/vue-tsgo, droit Contents en écriture ;
+# - NPM_TOKEN : jeton npmjs.com qui peut publier vue-go-tsc.
+#
+# Relancer après un échec partiel est sûr : la release GitHub est complétée (fichiers de même nom remplacés) et
+# la publication npm est sautée si la version y est déjà.
+
+name: release
+
+on:
+  push:
+    branches: [main]
+    paths: [cli/package.json]
+  workflow_dispatch:
+
+# Une seule release à la fois : deux runs ne doivent jamais se disputer le même tag.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: ${{ seve.event_name == 'workflow_dispatch' || bumped('cli/package.json') }}
+    runs-on: [linux]
+    timeout-minutes: 60
+    steps:
+      - id: version
+        name: Version
+        cache: false
+        run: |
+          set -e
+          version=$(node -p "require('./cli/package.json').version")
+          echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' || { echo "Version de release invalide : $version" >&2; exit 1; }
+          tag="v$version"
+          # Une version déjà publiée depuis un autre commit ne se republie pas : gh-release remplacerait les
+          # binaires d'une release que des utilisateurs installent déjà.
+          # Tag annoté (anciennes releases) : le commit est sur la ligne pelée `^{}`, l'autre est l'objet tag.
+          # Tag léger (créé par seve/gh-release) : une seule ligne, le commit.
+          remote=$(git ls-remote https://github.com/aidalinfo/vue-tsgo.git "refs/tags/$tag" "refs/tags/$tag^{}" \
+            | awk '$2 ~ /\^\{\}$/ { peeled = $1 } $2 !~ /\^\{\}$/ { direct = $1 } END { print (peeled != "" ? peeled : direct) }')
+          if [ -n "$remote" ] && [ "$remote" != "${{ seve.sha }}" ]; then
+            echo "Le tag $tag existe déjà sur un autre commit ($remote) : bumper la version." >&2
+            exit 1
+          fi
+          if npm view "vue-go-tsc@$version" version --registry=https://registry.npmjs.org/ >/dev/null 2>&1; then
+            echo "vue-go-tsc@$version est déjà sur npm : la publication npm sera sautée."
+            echo "npm_published=true" >> "$SEVE_OUTPUT"
+          else
+            echo "npm_published=false" >> "$SEVE_OUTPUT"
+          fi
+          echo "version=$version" >> "$SEVE_OUTPUT"
+          echo "tag=$tag" >> "$SEVE_OUTPUT"
+          echo "prerelease=$(case "$version" in *-*) echo true ;; *) echo false ;; esac)" >> "$SEVE_OUTPUT"
+
+      - uses: seve/setup-go@v1
+
+      # Noms attendus par cli/install.js (PLATFORM_MAP) : ne pas les changer.
+      - name: Binaires tsgo
+        run: |
+          set -e
+          mkdir -p release
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            goos=${target%/*}; goarch=${target#*/}
+            ext=$([ "$goos" = windows ] && echo .exe || true)
+            echo "== $goos/$goarch"
+            CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build -ldflags "-s -w" -o "release/tsgo-$goos-$goarch$ext" ./thirdparty/typescript-go/cmd/tsgo
+          done
+          ./release/tsgo-linux-amd64 --version
+          ls -la release
+
+      - name: Paquets VSIX
+        run: |
+          set -e
+          version='${{ steps.version.outputs.version }}'
+          cd editors/vscode
+          npm version "$version" --no-git-tag-version --allow-same-version
+          # Pas `npm ci` : package-lock.json n'est pas à jour (esbuild 0.27.3 manque), comme dans l'ancien workflow.
+          npm install --no-audit --no-fund
+          npm run bundle
+          for pair in darwin-arm64:tsgo-darwin-arm64 darwin-x64:tsgo-darwin-amd64 linux-x64:tsgo-linux-amd64 linux-arm64:tsgo-linux-arm64 win32-x64:tsgo-windows-amd64.exe; do
+            platform=${pair%%:*}; binary=${pair#*:}
+            rm -rf lib && mkdir lib
+            case "$binary" in *.exe) name=tsgo.exe ;; *) name=tsgo ;; esac
+            cp "../../release/$binary" "lib/$name"
+            chmod +x "lib/$name"
+            npx @vscode/vsce package --no-dependencies --target "$platform" --out "../../release/vue-tsgo-$version@$platform.vsix"
+          done
+          ls -la ../../release
+
+      # Le plugin de codegen Volar (codegen par défaut) est livré dans le paquet npm : cli/volar/plugin.mjs.
+      - name: Plugin de codegen Volar
+        run: node packages/vue/scripts/build-plugin.mjs && test -s cli/volar/plugin.mjs
+
+      # Copie des fichiers dans le run (UI ou `seve ci download <run> -n release`), 30 jours, envoyée avant les
+      # publications : elle reste disponible si l'une échoue.
+      - name: Artefact
+        uses: seve/upload-artifact@v1
+        with:
+          name: release
+          path: release
+
+      - name: Release GitHub
+        uses: seve/gh-release@v1
+        with:
+          tag: ${{ steps.version.outputs.tag }}
+          name: vue-tsgo ${{ steps.version.outputs.version }}
+          prerelease: ${{ steps.version.outputs.prerelease }}
+          token: ${{ secrets.GH_RELEASE_TOKEN }}
+          files: release/*
+          body: |
+            > Fork of [NikhilVerma/vue-tsgo](https://github.com/NikhilVerma/vue-tsgo) redistributed by aidalinfo.
+            > Only the npm name (`vue-go-tsc`) and release location differ — all technical credit is upstream.
+
+            ## Installation
+
+            ### npm (Global CLI)
+            ```bash
+            npm install -g vue-go-tsc@${{ steps.version.outputs.version }}
+            ```
+
+            ### As a project dev dependency (CI)
+            ```bash
+            pnpm add -D vue-go-tsc@${{ steps.version.outputs.version }}
+            ```
+            See the [CI integration guide](https://github.com/aidalinfo/vue-tsgo/blob/main/docs/integration.md).
+
+            ### Standalone Binaries
+            Download the binary for your platform and add to PATH.
+
+            ## Platform Guide
+
+            | Platform | VSIX | Binary |
+            |----------|------|--------|
+            | macOS Apple Silicon | `@darwin-arm64` | `tsgo-darwin-arm64` |
+            | macOS Intel | `@darwin-x64` | `tsgo-darwin-amd64` |
+            | Linux x64 | `@linux-x64` | `tsgo-linux-amd64` |
+            | Linux ARM64 | `@linux-arm64` | `tsgo-linux-arm64` |
+            | Windows x64 | `@win32-x64` | `tsgo-windows-amd64.exe` |
+
+            ## What's Changed
+
+            See [CHANGELOG.md](https://github.com/aidalinfo/vue-tsgo/blob/main/CHANGELOG.md) for full details.
+
+      # Pré-version (1.2.3-beta.0) : dist-tag `next`, pour ne jamais la servir à `npm install vue-go-tsc`.
+      - name: Publication npm
+        if: ${{ steps.version.outputs.npm_published != 'true' }}
+        uses: seve/npm-publish@v1
+        with:
+          package-dir: cli
+          registry: https://registry.npmjs.org/
+          tag: ${{ steps.version.outputs.prerelease == 'true' && 'next' || 'latest' }}
+          token: ${{ secrets.NPM_TOKEN }}

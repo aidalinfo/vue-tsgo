@@ -557,7 +557,7 @@ golar/
 │   └── update-typescript-go-shims.sh
 ├── .reference/                      # Volar source (gitignored, for comparison)
 │   └── language-tools/              # vuejs/language-tools clone
-├── .github/workflows/               # CI/CD (ci, release, pre-release)
+├── .seve/workflows/                 # CI/CD on Sève (ci, parity, release)
 ├── go.work                          # Go workspace config
 ├── go.mod                           # Root module with replace directives
 ├── Makefile                         # Build targets
