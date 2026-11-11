@@ -11,9 +11,11 @@ const {
   computeCodegenWorkers,
   computeGoMaxProcs,
   computeGoMemLimit,
+  computeHardGoMemLimit,
   measureIdleCpus,
   resolveEnv,
   registerInstance,
+  cgroupMemoryLimit,
   GiB,
   DEFAULT_MEM_FRACTION,
   MIN_MEM_LIMIT,
@@ -242,4 +244,60 @@ test('resolveEnv wires the Volar codegen and reserves its memory', () => {
 test('resolveEnv with the Go codegen never enables the plugin', () => {
   const env = resolveEnv({ GOLAR_PLUGIN: 'vue' }, { ...machine, codegen: 'go' });
   assert.strictEqual('GOLAR_PLUGIN' in env, false);
+});
+
+function fakeCgroupFs(files) {
+  return (p) => {
+    if (!(p in files)) {
+      throw Object.assign(new Error(`ENOENT: ${p}`), { code: 'ENOENT' });
+    }
+    return files[p];
+  };
+}
+
+test('cgroupMemoryLimit finds a v2 limit set on a parent cgroup', () => {
+  const read = fakeCgroupFs({
+    '/proc/self/cgroup': '0::/seve.slice/job-42/step\n',
+    '/sys/fs/cgroup/seve.slice/job-42/step/memory.max': 'max\n',
+    '/sys/fs/cgroup/seve.slice/job-42/step/memory.current': String(1 * GiB),
+    '/sys/fs/cgroup/seve.slice/job-42/memory.max': String(8 * GiB),
+    '/sys/fs/cgroup/seve.slice/job-42/memory.current': String(3 * GiB),
+    '/sys/fs/cgroup/seve.slice/memory.max': String(15 * GiB),
+    '/sys/fs/cgroup/memory.max': 'max',
+  });
+  assert.deepStrictEqual(cgroupMemoryLimit(read), { limit: 8 * GiB, usage: 3 * GiB });
+});
+
+test('cgroupMemoryLimit honors memory.high and cgroup v1', () => {
+  const v2 = fakeCgroupFs({
+    '/proc/self/cgroup': '0::/job\n',
+    '/sys/fs/cgroup/job/memory.max': String(10 * GiB),
+    '/sys/fs/cgroup/job/memory.high': String(8 * GiB),
+  });
+  assert.deepStrictEqual(cgroupMemoryLimit(v2), { limit: 8 * GiB, usage: undefined });
+  const v1 = fakeCgroupFs({
+    '/proc/self/cgroup': '12:cpu,cpuacct:/docker/abc\n4:memory:/docker/abc\n',
+    '/sys/fs/cgroup/memory/docker/abc/memory.limit_in_bytes': String(6 * GiB),
+    '/sys/fs/cgroup/memory/docker/abc/memory.usage_in_bytes': String(1 * GiB),
+    '/sys/fs/cgroup/memory/memory.limit_in_bytes': '9223372036854771712',
+  });
+  assert.deepStrictEqual(cgroupMemoryLimit(v1), { limit: 6 * GiB, usage: 1 * GiB });
+});
+
+test('cgroupMemoryLimit is undefined without a limit or outside Linux', () => {
+  assert.strictEqual(cgroupMemoryLimit(fakeCgroupFs({})), undefined);
+  const unlimited = fakeCgroupFs({ '/proc/self/cgroup': '0::/\n', '/sys/fs/cgroup/memory.max': 'max\n' });
+  assert.strictEqual(cgroupMemoryLimit(unlimited), undefined);
+});
+
+test('resolveEnv follows a hard cgroup limit instead of the free RAM', () => {
+  const env = resolveEnv({}, { ...machine, totalMem: 10 * GiB, availableMem: 5 * GiB, hardLimit: 8 * GiB });
+  assert.strictEqual(Number(env.GOMEMLIMIT), computeHardGoMemLimit(8 * GiB));
+  assert.strictEqual(computeHardGoMemLimit(8 * GiB), Math.floor(8 * GiB * 0.9));
+  assert.strictEqual(computeHardGoMemLimit(8 * GiB, 2), Math.floor(8 * GiB * 0.9 / 2));
+  const volar = resolveEnv({ GOLAR_PLUGIN_WORKERS: '1' }, { ...machine, hardLimit: 8 * GiB, codegen: 'volar' });
+  assert.strictEqual(Number(volar.GOMEMLIMIT), computeHardGoMemLimit(8 * GiB) - 200 * 1024 ** 2 * 2, 'Volar memory reserved');
+  const explicit = resolveEnv({ GOMEMLIMIT: '5GiB' }, { ...machine, hardLimit: 8 * GiB });
+  assert.strictEqual(explicit.GOMEMLIMIT, '5GiB');
+  assert.strictEqual(computeHardGoMemLimit(undefined), null);
 });

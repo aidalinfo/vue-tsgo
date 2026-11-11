@@ -2,7 +2,7 @@
 
 const { spawn } = require('child_process');
 const fs = require('fs');
-const { join, resolve } = require('path');
+const { join, posix, resolve } = require('path');
 const os = require('os');
 
 const GiB = 1024 ** 3;
@@ -34,6 +34,14 @@ const MIN_CPU_FRACTION = 0.125;
 
 // How long the launcher samples CPU activity before starting tsgo.
 const CPU_SAMPLE_MS = 200;
+
+// Fraction of a hard (cgroup) memory limit used as the soft Go heap ceiling.
+// Past the hard limit the process is killed, so the GC only needs to work
+// harder right before it: a lower ceiling buys nothing when the live heap
+// genuinely needs more, it only makes the GC run continuously (a large Nuxt
+// app ran 200 s in back-to-back GCs under a 4.1 GiB ceiling before being
+// killed anyway).
+const HARD_LIMIT_FRACTION = 0.9;
 
 // Never set a heap ceiling below this: a limit under a project's live heap
 // makes the Go GC run continuously instead of making progress.
@@ -193,11 +201,25 @@ function computeCodegenWorkers(procs, availableMem) {
   return workers;
 }
 
+// Soft Go heap ceiling under a hard memory limit (cgroup): most of it, shared
+// between the concurrent runs (they are all inside the same limit).
+function computeHardGoMemLimit(hardLimit, instances = 1) {
+  if (!Number.isFinite(hardLimit) || hardLimit <= 0) {
+    return null;
+  }
+  const n = Math.max(1, Math.floor(instances) || 1);
+  return Math.floor((hardLimit * HARD_LIMIT_FRACTION) / n);
+}
+
 // Return a copy of `env` with GOMAXPROCS and GOMEMLIMIT defaulted from the
 // machine resources, what is currently free, and the number of concurrent
 // runs. Explicit values are always respected (never overridden). With the
 // Volar codegen, its Node processes get a share of the memory budget.
-function resolveEnv(env, { cpus, totalMem, instances = 1, idleCpus, availableMem, codegen = 'go', volar }) {
+//
+// `hardLimit` is the cgroup memory limit, when there is one: exceeding it gets
+// the process killed, so the ceiling follows it rather than the RAM that
+// happens to be free when the run starts.
+function resolveEnv(env, { cpus, totalMem, instances = 1, idleCpus, availableMem, hardLimit, codegen = 'go', volar }) {
   const out = { ...env };
   if (!out.GOMAXPROCS) {
     const procs = computeGoMaxProcs(cpus, instances, idleCpus);
@@ -219,7 +241,7 @@ function resolveEnv(env, { cpus, totalMem, instances = 1, idleCpus, availableMem
     delete out.GOLAR_PLUGIN;
   }
   if (!out.GOMEMLIMIT) {
-    let limit = computeGoMemLimit(totalMem, instances, availableMem);
+    let limit = computeHardGoMemLimit(hardLimit, instances) ?? computeGoMemLimit(totalMem, instances, availableMem);
     if (limit && workers > 0) {
       limit = Math.floor(Math.max(Math.min(MIN_MEM_LIMIT, limit), limit - VOLAR_BASE_MEM - workers * VOLAR_WORKER_MEM));
     }
@@ -296,18 +318,96 @@ function availableCpus() {
   return typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length;
 }
 
-// Usable RAM: honors a cgroup memory limit (containers) when it is tighter
-// than physical RAM.
-function totalMemory() {
-  const total = os.totalmem();
+// cgroup limits at or above this are "unlimited" (cgroup v1 reports a huge
+// page-aligned number instead of "max").
+const CGROUP_UNLIMITED = 2 ** 60;
+
+function parseCgroupBytes(text) {
+  const value = Number(String(text).trim());
+  return Number.isFinite(value) && value > 0 && value < CGROUP_UNLIMITED ? value : undefined;
+}
+
+// The tightest cgroup memory limit of this process and the usage counted
+// against it: { limit, usage } (usage may be undefined), or undefined when
+// there is none (or not on Linux).
+//
+// process.constrainedMemory() only reads the process's own cgroup, but a CI
+// job or container runtime often sets the limit on a parent (the job's slice)
+// and leaves the leaf unlimited, so this walks from the process's cgroup up to
+// the root and keeps the smallest memory.max / memory.high (v2) or
+// memory.limit_in_bytes (v1).
+function cgroupMemoryLimit(readFile = (p) => fs.readFileSync(p, 'utf8'), root = '/sys/fs/cgroup') {
+  let membership;
+  try {
+    membership = readFile('/proc/self/cgroup');
+  } catch {
+    return undefined;
+  }
+  let best;
+  const read = (file) => {
+    try {
+      return readFile(file);
+    } catch {
+      return undefined;
+    }
+  };
+  for (const line of membership.split('\n')) {
+    // <hierarchy-id>:<controllers>:<path>; the path itself may contain ':'.
+    const first = line.indexOf(':');
+    const second = line.indexOf(':', first + 1);
+    if (first < 0 || second < 0) {
+      continue;
+    }
+    const id = line.slice(0, first);
+    const controllers = line.slice(first + 1, second).split(',');
+    let dir = line.slice(second + 1);
+    let base;
+    let files;
+    if (id === '0' && controllers.length === 1 && controllers[0] === '') {
+      base = root;
+      files = { limits: ['memory.max', 'memory.high'], usage: 'memory.current' };
+    } else if (controllers.includes('memory')) {
+      base = join(root, 'memory');
+      files = { limits: ['memory.limit_in_bytes'], usage: 'memory.usage_in_bytes' };
+    } else {
+      continue;
+    }
+    for (;;) {
+      const cgroupDir = join(base, dir);
+      for (const name of files.limits) {
+        const limit = parseCgroupBytes(read(join(cgroupDir, name)));
+        if (limit !== undefined && (!best || limit < best.limit)) {
+          best = { limit, usage: parseCgroupBytes(read(join(cgroupDir, files.usage))) };
+        }
+      }
+      if (dir === '/' || dir === '') {
+        break;
+      }
+      dir = posix.dirname(dir);
+    }
+  }
+  return best;
+}
+
+// Usable RAM: honors a cgroup memory limit (containers, CI jobs) when it is
+// tighter than physical RAM, including a limit set on a parent cgroup.
+function totalMemory(cgroup = cgroupMemoryLimit()) {
+  let total = os.totalmem();
   const constrained = typeof process.constrainedMemory === 'function' ? process.constrainedMemory() : 0;
-  return constrained > 0 && constrained < total ? constrained : total;
+  if (constrained > 0 && constrained < total) {
+    total = constrained;
+  }
+  return cgroup && cgroup.limit < total ? cgroup.limit : total;
 }
 
 // RAM currently available to this process (MemAvailable on Linux, bounded by
 // the cgroup limit when there is one).
-function freeMemory() {
-  return typeof process.availableMemory === 'function' ? process.availableMemory() : os.freemem();
+function freeMemory(cgroup = cgroupMemoryLimit()) {
+  const available = typeof process.availableMemory === 'function' ? process.availableMemory() : os.freemem();
+  if (cgroup && cgroup.usage !== undefined) {
+    return Math.min(available, Math.max(0, cgroup.limit - cgroup.usage));
+  }
+  return available;
 }
 
 // Idle cores right now, sampled over CPU_SAMPLE_MS.
@@ -340,12 +440,14 @@ async function main() {
   // Sampling costs CPU_SAMPLE_MS of startup; skip it when it cannot matter.
   const idleCpus = process.env.GOMAXPROCS ? undefined : await sampleIdleCpus(cpus);
 
+  const cgroup = cgroupMemoryLimit();
   const env = resolveEnv(process.env, {
     cpus,
-    totalMem: totalMemory(),
+    totalMem: totalMemory(cgroup),
     instances,
     idleCpus,
-    availableMem: freeMemory(),
+    availableMem: freeMemory(cgroup),
+    hardLimit: cgroup?.limit,
     codegen,
     volar: {
       pluginEntry: VOLAR_PLUGIN,
@@ -403,9 +505,11 @@ module.exports = {
   computeCodegenWorkers,
   computeGoMaxProcs,
   computeGoMemLimit,
+  computeHardGoMemLimit,
   measureIdleCpus,
   resolveEnv,
   registerInstance,
+  cgroupMemoryLimit,
   GiB,
   DEFAULT_CPU_FRACTION,
   DEFAULT_MEM_FRACTION,

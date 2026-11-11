@@ -20943,24 +20943,29 @@ func (c *Checker) getPropertyOfUnionOrIntersectionType(t *Type, name string, ski
 // these partial properties when identifying discriminant properties, but otherwise they are filtered out
 // and do not appear to be present in the union type.
 func (c *Checker) getUnionOrIntersectionProperty(t *Type, name string, skipObjectFunctionPropertyAugment bool) *ast.Symbol {
-	var cache ast.SymbolTable
+	d := t.AsUnionOrIntersectionType()
 	if skipObjectFunctionPropertyAugment {
-		cache = ast.GetSymbolTable(&t.AsUnionOrIntersectionType().propertyCacheWithoutFunctionPropertyAugment)
+		if prop := d.propertyCacheWithoutFunctionPropertyAugment[name]; prop != nil {
+			return prop
+		}
 	} else {
-		cache = ast.GetSymbolTable(&t.AsUnionOrIntersectionType().propertyCache)
-	}
-	if prop := cache[name]; prop != nil {
-		return prop
+		if prop := d.propertyCache[name]; prop != nil {
+			return prop
+		}
+		// An entry of the non-augmented cache is also the augmented property unless it is partial. TypeScript
+		// copies such entries into the augmented cache when it creates them; looking them up here instead gives
+		// the same results without storing every property twice (getPropertiesOfUnionOrIntersectionType fills
+		// the non-augmented cache with every property of every intersection it reduces).
+		if prop := d.propertyCacheWithoutFunctionPropertyAugment[name]; prop != nil && prop.CheckFlags&ast.CheckFlagsPartial == 0 {
+			return prop
+		}
 	}
 	prop := c.createUnionOrIntersectionProperty(t, name, skipObjectFunctionPropertyAugment)
 	if prop != nil {
-		cache[name] = prop
-		// Propagate an entry from the non-augmented cache to the augmented cache unless the property is partial.
-		if skipObjectFunctionPropertyAugment && prop.CheckFlags&ast.CheckFlagsPartial == 0 {
-			augmentedCache := ast.GetSymbolTable(&t.AsUnionOrIntersectionType().propertyCache)
-			if augmentedCache[name] == nil {
-				augmentedCache[name] = prop
-			}
+		if skipObjectFunctionPropertyAugment {
+			ast.GetSymbolTable(&d.propertyCacheWithoutFunctionPropertyAugment)[name] = prop
+		} else {
+			ast.GetSymbolTable(&d.propertyCache)[name] = prop
 		}
 	}
 	return prop

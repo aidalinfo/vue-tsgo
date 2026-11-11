@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ⚡ Performance
+
+- **~0.5 GiB less memory on large Vue projects** — the checker kept every
+  synthetic property of a union or intersection twice: once in the cache
+  without Object/Function augmentation, and again in the augmented cache
+  (a copy TypeScript makes eagerly). Volar's generated code reduces large
+  intersections in every SFC (e.g. `ComponentCustomProperties` with one
+  member per Nuxt auto-import), so on Pulse ERP (1,831 SFCs) these maps
+  held ~1.3 GiB, half of it the copy. The augmented lookup now falls back
+  to the other cache instead: the same properties are created in the same
+  order, so diagnostics are unchanged (byte-identical output on the parity
+  fixtures). Measured on Pulse ERP: live heap 5.03 → 4.49 GiB, peak RSS
+  6.00 → 5.50 GiB, run 2 min 32 s → 71 s.
+
+### 🐛 Bug Fixes
+
+- **No more GC death spiral under a container memory limit** — the default
+  `GOMEMLIMIT` came from the RAM free when the run started; on a busy CI
+  runner it fell below the heap a large project needs (4.1 GiB for ≥ 4.7 GiB
+  live on Pulse ERP), and the Go GC then ran back to back for minutes. When
+  the run has a cgroup memory limit, `GOMEMLIMIT` is now 90% of it (shared
+  between concurrent runs, minus the Volar codegen's reserve).
+- **cgroup limits set on a parent cgroup are detected** — CI jobs often limit
+  the job's slice and leave the process's own cgroup unlimited, which
+  `process.constrainedMemory()` does not see (10 GiB visible for an 8 GiB
+  job). The launcher now walks the cgroup hierarchy (v1 and v2, `memory.max`
+  and `memory.high`).
+
+### ✨ Features
+
+- **Memory watchdog for OOM-killed runs** — `VUE_GO_TSC_MEMWATCH=<dir>` writes
+  a plain-text dump each time the process memory crosses a new multiple of
+  `VUE_GO_TSC_MEMWATCH_STEP` (default `1GiB`): Go runtime memory breakdown,
+  every goroutine's stack, and the live heap by allocating function and
+  stack. `--pprofDir` only writes on a clean exit; these dumps survive the
+  OOM killer and need no Go toolchain to read.
+
 ## [0.3.1] - 2026-09-23
 
 ### 🐛 Bug Fixes
