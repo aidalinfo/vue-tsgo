@@ -17,8 +17,12 @@
 # - GH_RELEASE_TOKEN : jeton GitHub limité à aidalinfo/vue-tsgo, droit Contents en écriture ;
 # - NPM_TOKEN : jeton npmjs.com qui peut publier vue-go-tsc.
 #
-# Relancer après un échec partiel est sûr : la release GitHub est complétée (fichiers de même nom remplacés) et
-# la publication npm est sautée si la version y est déjà.
+# Relancer après un échec partiel est sûr :
+# - sur le même commit, la release GitHub est complétée (fichiers de même nom remplacés) et la publication npm est
+#   sautée si la version y est déjà ;
+# - depuis un commit plus récent (workflow corrigé, `seve ci dispatch release.yml` sur main), si npm manque encore
+#   et que cli/, packages/ et pnpm-lock.yaml n'ont pas changé depuis le tag : la release GitHub existante est gardée
+#   telle quelle (binaires jamais remplacés) et seul npm est publié. Sinon, bumper la version.
 
 name: release
 
@@ -47,30 +51,46 @@ jobs:
           version=$(node -p "require('./cli/package.json').version")
           echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' || { echo "Version de release invalide : $version" >&2; exit 1; }
           tag="v$version"
-          # Une version déjà publiée depuis un autre commit ne se republie pas : gh-release remplacerait les
-          # binaires d'une release que des utilisateurs installent déjà.
+          if npm view "vue-go-tsc@$version" version --registry=https://registry.npmjs.org/ >/dev/null 2>&1; then
+            npm_published=true
+          else
+            npm_published=false
+          fi
           # Tag annoté (anciennes releases) : le commit est sur la ligne pelée `^{}`, l'autre est l'objet tag.
           # Tag léger (créé par seve/gh-release) : une seule ligne, le commit.
           remote=$(git ls-remote https://github.com/aidalinfo/vue-tsgo.git "refs/tags/$tag" "refs/tags/$tag^{}" \
             | awk '$2 ~ /\^\{\}$/ { peeled = $1 } $2 !~ /\^\{\}$/ { direct = $1 } END { print (peeled != "" ? peeled : direct) }')
+          github_release=true
           if [ -n "$remote" ] && [ "$remote" != "${{ seve.sha }}" ]; then
-            echo "Le tag $tag existe déjà sur un autre commit ($remote) : bumper la version." >&2
-            exit 1
+            # Release GitHub déjà faite depuis un autre commit. Ses binaires ne sont jamais remplacés (des
+            # utilisateurs les installent peut-être). Seule reprise permise : npm manque encore (publication en
+            # échec, workflow corrigé depuis) et le paquet npm serait identique à celui du commit tagué.
+            if [ "$npm_published" = true ]; then
+              echo "$tag est déjà publié (GitHub sur $remote, npm) : bumper la version." >&2
+              exit 1
+            fi
+            git cat-file -e "$remote^{commit}" 2>/dev/null || { echo "Commit du tag $tag ($remote) absent du dépôt : bumper la version." >&2; exit 1; }
+            if ! git diff --quiet "$remote" "${{ seve.sha }}" -- cli packages pnpm-lock.yaml; then
+              echo "cli/ ou packages/ ont changé depuis $tag ($remote) : bumper la version." >&2
+              exit 1
+            fi
+            echo "Reprise de $tag : la release GitHub ($remote) est gardée telle quelle, seule la publication npm part."
+            github_release=false
           fi
-          if npm view "vue-go-tsc@$version" version --registry=https://registry.npmjs.org/ >/dev/null 2>&1; then
-            echo "vue-go-tsc@$version est déjà sur npm : la publication npm sera sautée."
-            echo "npm_published=true" >> "$SEVE_OUTPUT"
-          else
-            echo "npm_published=false" >> "$SEVE_OUTPUT"
-          fi
+          if [ "$npm_published" = true ]; then echo "vue-go-tsc@$version est déjà sur npm : la publication npm sera sautée."; fi
+          echo "npm_published=$npm_published" >> "$SEVE_OUTPUT"
+          echo "github_release=$github_release" >> "$SEVE_OUTPUT"
           echo "version=$version" >> "$SEVE_OUTPUT"
           echo "tag=$tag" >> "$SEVE_OUTPUT"
           echo "prerelease=$(case "$version" in *-*) echo true ;; *) echo false ;; esac)" >> "$SEVE_OUTPUT"
 
-      - uses: seve/setup-go@v1
+      - name: Go
+        if: ${{ steps.version.outputs.github_release == 'true' }}
+        uses: seve/setup-go@v1
 
       # Noms attendus par cli/install.js (PLATFORM_MAP) : ne pas les changer.
       - name: Binaires tsgo
+        if: ${{ steps.version.outputs.github_release == 'true' }}
         run: |
           set -e
           mkdir -p release
@@ -84,6 +104,7 @@ jobs:
           ls -la release
 
       - name: Paquets VSIX
+        if: ${{ steps.version.outputs.github_release == 'true' }}
         run: |
           set -e
           version='${{ steps.version.outputs.version }}'
@@ -105,16 +126,19 @@ jobs:
       # Le plugin de codegen Volar (codegen par défaut) est livré dans le paquet npm : cli/volar/plugin.mjs.
       - name: Plugin de codegen Volar
         run: node packages/vue/scripts/build-plugin.mjs && test -s cli/volar/plugin.mjs
+        outputs-files: [cli/volar]
 
       # Copie des fichiers dans le run (UI ou `seve ci download <run> -n release`), 30 jours, envoyée avant les
       # publications : elle reste disponible si l'une échoue.
       - name: Artefact
+        if: ${{ steps.version.outputs.github_release == 'true' }}
         uses: seve/upload-artifact@v1
         with:
           name: release
           path: release
 
       - name: Release GitHub
+        if: ${{ steps.version.outputs.github_release == 'true' }}
         uses: seve/gh-release@v1
         with:
           tag: ${{ steps.version.outputs.tag }}
@@ -157,11 +181,22 @@ jobs:
             See [CHANGELOG.md](https://github.com/aidalinfo/vue-tsgo/blob/main/CHANGELOG.md) for full details.
 
       # Pré-version (1.2.3-beta.0) : dist-tag `next`, pour ne jamais la servir à `npm install vue-go-tsc`.
+      # npm publish et non seve/npm-publish@v1 : l'action appelle `pnpm publish --userconfig`, option que pnpm
+      # refuse (« Unknown option: 'userconfig' », run r_2egdj9rbyvab02dz). Le jeton reste dans l'environnement :
+      # le .npmrc temporaire, hors du dépôt, ne contient que `${NPM_TOKEN}`, que npm résout lui-même.
+      # cache: false : une publication n'est jamais reprise du cache.
       - name: Publication npm
         if: ${{ steps.version.outputs.npm_published != 'true' }}
-        uses: seve/npm-publish@v1
-        with:
-          package-dir: cli
-          registry: https://registry.npmjs.org/
-          tag: ${{ steps.version.outputs.prerelease == 'true' && 'next' || 'latest' }}
-          token: ${{ secrets.NPM_TOKEN }}
+        cache: false
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_DIST_TAG: ${{ steps.version.outputs.prerelease == 'true' && 'next' || 'latest' }}
+        run: |
+          set -e
+          [ -n "$NPM_TOKEN" ] || { echo "Secret NPM_TOKEN absent pour ce run." >&2; exit 1; }
+          npmrc=$(mktemp)
+          trap 'rm -f "$npmrc"' EXIT
+          printf '%s\n' 'registry=https://registry.npmjs.org/' '//registry.npmjs.org/:_authToken=${NPM_TOKEN}' > "$npmrc"
+          cd cli
+          npm publish --access public --tag "$NPM_DIST_TAG" --userconfig "$npmrc"
+          npm view "vue-go-tsc@${{ steps.version.outputs.version }}" version --registry=https://registry.npmjs.org/ || true
